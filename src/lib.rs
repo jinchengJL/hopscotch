@@ -1,7 +1,3 @@
-#![feature(test)]
-
-extern crate test;
-
 use bitmaps::Bitmap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
@@ -61,7 +57,10 @@ where
 }
 
 // TODO: Add deletion.
-// TODO: Optimize.
+// TODO: Optimize this. I'm currently handicapped by WSL2, which doesn't have
+// hardware performance counters. `cargo flamegraph` has also been unhelpful -
+// it produces a mostly blank graph. I may need to build Rust from source in
+// order to get standard library functions to show up.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -251,8 +250,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use std::collections::HashMap;
 
     #[test]
     fn test_insertion() {
@@ -275,133 +272,5 @@ mod tests {
             assert!(map.check_consistency());
         }
         assert_eq!(map.is_empty(), false);
-    }
-
-    // TODO: Add an AssociativeArray trait and make the benchmarks generic.
-
-    const MAP_SIZE: usize = 100000;
-
-    #[bench]
-    fn bench_hopscotch_insertion(b: &mut test::Bencher) {
-        let mut map: HsHashMap<i32, i32> = HsHashMap::new();
-        let mut key: i32 = 0;
-        b.iter(|| {
-            map.insert(key, key);
-            key += 1;
-            if key as usize == MAP_SIZE {
-                map.clear();
-                key = 0;
-            }
-        })
-    }
-
-    #[bench]
-    fn bench_hopscotch_get(b: &mut test::Bencher) {
-        let mut map: HsHashMap<i32, i32> = HsHashMap::new();
-        for key in 0..MAP_SIZE as i32 {
-            map.insert(key * 2, key * 2);
-        }
-        let mut key: i32 = 0;
-        b.iter(|| {
-            map.get(&key);
-            key += 1;
-            if key as usize == MAP_SIZE * 2 {
-                key = 0;
-            }
-        })
-    }
-
-    #[bench]
-    fn bench_hashmap_insertion(b: &mut test::Bencher) {
-        let mut map: HashMap<i32, i32> = HashMap::new();
-        let mut key: i32 = 0;
-        b.iter(|| {
-            map.insert(key, key);
-            key += 1;
-            if key as usize == MAP_SIZE {
-                map.clear();
-                key = 0;
-            }
-        })
-    }
-
-    #[bench]
-    fn bench_hashmap_get(b: &mut test::Bencher) {
-        let mut map: HashMap<i32, i32> = HashMap::new();
-        for key in 0..MAP_SIZE as i32 {
-            map.insert(key * 2, key * 2);
-        }
-        let mut key: i32 = 0;
-        b.iter(|| {
-            map.get(&key);
-            key += 1;
-            if key as usize == MAP_SIZE * 2 {
-                key = 0;
-            }
-        })
-    }
-
-    #[bench]
-    fn bench_hashmap_clone(b: &mut test::Bencher) {
-        let mut map: HashMap<i32, i32> = HashMap::new();
-        for key in 0..MAP_SIZE as i32 {
-            map.insert(key, key);
-        }
-        let mut map_copy = map.clone();
-        b.iter(|| {
-            map_copy = map.clone();
-        })
-    }
-
-    #[bench]
-    fn bench_hashmap_removal(b: &mut test::Bencher) {
-        // NOTE: This measures removal plus an amortized clone.
-        // Consider switching to Criterion, which has better support for
-        // operations that need fresh input. See:
-        // https://bheisler.github.io/criterion.rs/criterion/struct.Bencher
-        let mut map: HashMap<i32, i32> = HashMap::new();
-        for key in 0..MAP_SIZE as i32 {
-            map.insert(key, key);
-        }
-        let mut key: i32 = 0;
-        let mut map_copy = map.clone();
-        b.iter(|| {
-            map_copy.remove(&key);
-            key += 1;
-            if key as usize == MAP_SIZE {
-                map_copy = map.clone();
-                key = 0;
-            }
-        })
-    }
-
-    #[bench]
-    fn bench_btreemap_insertion(b: &mut test::Bencher) {
-        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        let mut key: i32 = 0;
-        b.iter(|| {
-            map.insert(key, key);
-            key += 1;
-            if key as usize == MAP_SIZE {
-                map.clear();
-                key = 0;
-            }
-        })
-    }
-
-    #[bench]
-    fn bench_btreemap_get(b: &mut test::Bencher) {
-        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        for key in 0..MAP_SIZE as i32 {
-            map.insert(key * 2, key * 2);
-        }
-        let mut key: i32 = 0;
-        b.iter(|| {
-            map.get(&key);
-            key += 1;
-            if key as usize == MAP_SIZE * 2 {
-                key = 0;
-            }
-        })
     }
 }
