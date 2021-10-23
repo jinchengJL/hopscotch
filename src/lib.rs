@@ -4,8 +4,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::mem;
 
-// TODO: Make the hop limit a parameter.
-const HOP_LIMIT: usize = 32;
+const HOP_RANGE: usize = 32;
 
 #[derive(Clone, Debug)]
 struct Entry<K, V>
@@ -22,16 +21,16 @@ struct Slot<K, V>
 where
     K: Hash + Eq,
 {
-    hop_info: Bitmap<HOP_LIMIT>,
+    hop_info: Bitmap<HOP_RANGE>,
     entry: Option<Entry<K, V>>,
 }
 
-// A logical hash bucket storing many entries.
+// A logical hash bucket storing up to HOP_RANGE entries.
 // TODO: Add a method for iterating over occupied hops.
 trait Bucket {
-    fn is_occupied(&self, hop: usize) -> bool;
+    fn has_hop(&self, hop: usize) -> bool;
 
-    fn set_occupied(&mut self, hop: usize, occupied: bool);
+    fn set_hop(&mut self, hop: usize, occupied: bool);
 
     fn is_full(&self) -> bool;
 }
@@ -65,11 +64,11 @@ impl<K, V> Bucket for Slot<K, V>
 where
     K: Hash + Eq,
 {
-    fn is_occupied(&self, hop: usize) -> bool {
+    fn has_hop(&self, hop: usize) -> bool {
         self.hop_info.get(hop)
     }
 
-    fn set_occupied(&mut self, hop: usize, occupied: bool) {
+    fn set_hop(&mut self, hop: usize, occupied: bool) {
         self.hop_info.set(hop, occupied);
     }
 
@@ -78,11 +77,12 @@ where
     }
 }
 
-// TODO: Add deletion.
-// TODO: Optimize this. I'm currently handicapped by virtual machines, which
-// do not have hardware performance counters. `cargo flamegraph` has also been
-// unhelpful - it produces a mostly blank graph. I may need to build Rust from
-// source in order to get standard library functions to show up.
+// TODO: Iterators.
+// TODO: Parameterize the hash function.
+// TODO: Parameterize the hop range.
+// TODO: Optimize insertion, with better profiling tools.
+// - WSL doesn't expose hardware perf counters.
+// - `cargo flamegraph` produces a ~blank graph.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -90,7 +90,7 @@ where
     // Public functions.
     pub fn new() -> HsHashMap<K, V> {
         let mut slots: Vec<Slot<K, V>> = vec![];
-        slots.resize_with(HOP_LIMIT, Slot::new);
+        slots.resize_with(HOP_RANGE, Slot::new);
         HsHashMap {
             slots: slots,
             length: 0,
@@ -120,7 +120,7 @@ where
         }
         // Keep moving the empty slot closer to bucket_idx.
         let mut hop = vacant_hop.unwrap();
-        while hop >= HOP_LIMIT {
+        while hop >= HOP_RANGE {
             hop = match self.move_closer(bucket_idx, hop) {
                 None => {
                     self.rehash(self.capacity() * 2);
@@ -132,8 +132,8 @@ where
         let slots = &mut self.slots;
         let entry_idx = (bucket_idx + hop) % capacity;
         debug_assert!(slots[entry_idx].is_vacant());
-        debug_assert!(!slots[bucket_idx].is_occupied(hop));
-        slots[bucket_idx].set_occupied(hop, true);
+        debug_assert!(!slots[bucket_idx].has_hop(hop));
+        slots[bucket_idx].set_hop(hop, true);
         slots[entry_idx].entry = Some(Entry { key: k, value: v });
         self.length += 1;
         None
@@ -142,12 +142,10 @@ where
     pub fn get(&self, k: &K) -> Option<&V> {
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
-        for hop in (0..HOP_LIMIT).filter(|hop| hop_info.get(*hop)) {
+        for hop in (0..HOP_RANGE).filter(|hop| hop_info.get(*hop)) {
             let entry_idx = self.get_idx(bucket_idx, hop);
             match &self.slots[entry_idx].entry {
                 None => {
-                    // TODO: Can we relax this such that, when deleting an
-                    // item, we don't backtrack to reset all the bitmaps?
                     std::debug_assert!(false, "Bucket should not be empty.");
                     continue;
                 }
@@ -165,6 +163,31 @@ where
         unsafe { mem::transmute(self.get(k)) }
     }
 
+    pub fn contains_key(&self, k: &K) -> bool {
+        self.get(k).is_some()
+    }
+
+    pub fn remove(&mut self, k: &K) -> Option<V> {
+        let bucket_idx = self.get_bucket(&k);
+        let hop_info = &self.slots[bucket_idx].hop_info;
+        for hop in (0..HOP_RANGE).filter(|hop| hop_info.get(*hop)) {
+            let entry_idx = self.get_idx(bucket_idx, hop);
+            match &self.slots[entry_idx].entry {
+                None => {
+                    std::debug_assert!(false, "Bucket should not be empty.");
+                    continue;
+                }
+                Some(Entry { key, value: _ }) if key == k => {
+                    self.slots[bucket_idx].set_hop(hop, false);
+                    self.length -= 1;
+                    return Some(mem::take(&mut self.slots[entry_idx].entry).unwrap().value);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -179,7 +202,7 @@ where
 
     pub fn clear(&mut self) {
         self.slots.clear();
-        self.slots.resize_with(HOP_LIMIT, Slot::new);
+        self.slots.resize_with(HOP_RANGE, Slot::new);
         self.length = 0;
     }
 
@@ -188,7 +211,6 @@ where
         self.get_hash(&k) as usize % self.capacity()
     }
 
-    // TODO: Make the hash function a parameter.
     fn get_hash(&self, k: &K) -> u64 {
         let mut hasher = DefaultHasher::new();
         k.hash(&mut hasher);
@@ -200,7 +222,7 @@ where
     }
 
     fn rehash(&mut self, new_capacity: usize) {
-        // println!("Rehashing from {} to {}.", self.capacity(), new_capacity);
+        dbg!("Rehashing from {} to {}.", self.capacity(), new_capacity);
         let slots = mem::replace(&mut self.slots, vec![]);
         let original_length = self.length;
         self.slots.resize_with(new_capacity, Slot::new);
@@ -215,15 +237,15 @@ where
 
     // Moves the vacant slot at `hop` closer to `origin_idx`.
     fn move_closer(&mut self, origin_idx: usize, vacant_hop: usize) -> Option<usize> {
-        debug_assert!(vacant_hop >= HOP_LIMIT);
+        debug_assert!(vacant_hop >= HOP_RANGE);
         let vacant_idx = self.get_idx(origin_idx, vacant_hop);
         debug_assert!(self.slots[vacant_idx].is_vacant());
-        for candidate_hop in (vacant_hop - HOP_LIMIT + 1)..vacant_hop {
+        for candidate_hop in (vacant_hop - HOP_RANGE + 1)..vacant_hop {
             let candidate_idx = self.get_idx(origin_idx, candidate_hop);
             let candidate_to_vacant = vacant_hop - candidate_hop;
             // Hop info for vacant_hop must be empty.
-            debug_assert!(candidate_to_vacant < HOP_LIMIT);
-            debug_assert!(!self.slots[candidate_idx].is_occupied(candidate_to_vacant));
+            debug_assert!(candidate_to_vacant < HOP_RANGE);
+            debug_assert!(!self.slots[candidate_idx].has_hop(candidate_to_vacant));
             // Find the earliest slot for `candidate_idx` that isn't empty.
             let victim_hop = match self.slots[candidate_idx].hop_info.first_index() {
                 Some(hop) if hop < candidate_to_vacant => hop,
@@ -233,18 +255,10 @@ where
             };
             // Swap the victim entry with the empty slot.
             let victim_idx = self.get_idx(candidate_idx, victim_hop);
-            let victim_entry = mem::take(&mut self.slots[victim_idx].entry);
+            self.slots[vacant_idx].entry = mem::take(&mut self.slots[victim_idx].entry);
             debug_assert!(self.slots[victim_idx].is_vacant());
-            self.slots[vacant_idx].entry = victim_entry;
-            self.slots[candidate_idx].set_occupied(victim_hop, false);
-            self.slots[candidate_idx].set_occupied(candidate_to_vacant, true);
-            // println!(
-            //     "Moved an empty slot from hop/index {}/{} to {}/{}.",
-            //     vacant_hop,
-            //     vacant_idx,
-            //     candidate_hop + victim_hop,
-            //     victim_idx
-            // );
+            self.slots[candidate_idx].set_hop(victim_hop, false);
+            self.slots[candidate_idx].set_hop(candidate_to_vacant, true);
             return Some(candidate_hop + victim_hop);
         }
         None
@@ -253,7 +267,7 @@ where
     #[cfg(test)]
     fn check_consistency(&self) -> bool {
         for (bucket_idx, bucket) in self.slots.iter().enumerate() {
-            for hop in (0..HOP_LIMIT).filter(|hop| bucket.hop_info.get(*hop)) {
+            for hop in (0..HOP_RANGE).filter(|hop| bucket.hop_info.get(*hop)) {
                 let entry_idx = self.get_idx(bucket_idx, hop);
                 if self.slots[entry_idx].is_vacant() {
                     println!(
@@ -273,25 +287,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_insertion() {
+    fn basic_test() {
         let mut map: HsHashMap<i32, i32> = HsHashMap::new();
         assert_eq!(map.is_empty(), true);
         assert_eq!(map.len(), 0);
-        for key in 0..(HOP_LIMIT * 16) as i32 {
+        for key in 0..(HOP_RANGE * 16) as i32 {
             assert_eq!(map.get(&key), None);
-            println!("insert({}, {})", key, key);
             assert_eq!(map.insert(key, key), None);
             assert_eq!(map.is_empty(), false);
             assert_eq!(map.len(), key as usize + 1);
             assert_eq!(*map.get(&key).unwrap(), key);
             assert_eq!(*map.get_mut(&key).unwrap(), key);
-            assert!(map.check_consistency());
         }
+        assert!(map.check_consistency());
+        for val in 1..10 {
+            assert_eq!(map.insert(0, val), Some(val - 1));
+        }
+        assert!(map.check_consistency());
         for val in 2..10 {
-            println!("insert(1, {})", val);
-            assert_eq!(map.insert(1, val), Some(val - 1));
-            assert!(map.check_consistency());
+            let slot = map.get_mut(&1).unwrap();
+            *slot = val;
+            assert_eq!(*map.get(&1).unwrap(), val);
         }
+        assert!(map.check_consistency());
+        assert_eq!(map.len(), HOP_RANGE * 16);
+        for key in 2..(HOP_RANGE * 8) as i32 {
+            assert_eq!(*map.get(&key).unwrap(), key);
+            assert_eq!(map.remove(&key), Some(key), "{:?}", key);
+        }
+        assert!(map.check_consistency());
+        assert_eq!(map.len(), HOP_RANGE * 8 + 2);
         assert_eq!(map.is_empty(), false);
     }
 }

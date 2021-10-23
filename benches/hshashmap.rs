@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use hopscotch::HsHashMap;
 
 const MAP_SIZE: usize = 100000;
@@ -35,9 +35,31 @@ fn hopscotch_get(c: &mut Criterion) {
     });
 }
 
+fn hopscotch_remove1000(c: &mut Criterion) {
+    let mut map: HsHashMap<i32, i32> = HsHashMap::new();
+    for key in 0..MAP_SIZE as i32 {
+        map.insert(key, key);
+    }
+    // Unfortunately, I haven't found a way to tell Criterion to use the the 
+    // same input for X iterations before re-generating it. Maybe, use a Boxed
+    // hash map and re-generate it in setup only when it's empty?
+    c.bench_function("hopscotch remove1000", |b| {
+        b.iter_batched_ref(
+            || map.clone(),
+            |map| {
+                for key in 0..1000 as i32 {
+                    map.remove(&key);
+                }
+            },
+            BatchSize::LargeInput,
+        )
+    });
+}
+
 criterion_group!(
     benches,
     hopscotch_insertion,
     hopscotch_get,
+    hopscotch_remove1000,
 );
 criterion_main!(benches);
