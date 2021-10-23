@@ -12,7 +12,15 @@ bitmaps = "3.1.0"
 criterion = "0.3"
 
 [[bench]]
-name = "hashmaps"
+name = "hashmap"
+harness = false
+
+[[bench]]
+name = "btreemap"
+harness = false
+
+[[bench]]
+name = "hshashmap"
 harness = false
 
 [profile.release]
