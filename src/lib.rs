@@ -121,14 +121,12 @@ where
         // Keep moving the empty slot closer to bucket_idx.
         let mut hop = vacant_hop.unwrap();
         while hop >= HOP_LIMIT {
-            match self.move_closer(bucket_idx, hop) {
+            hop = match self.move_closer(bucket_idx, hop) {
                 None => {
                     self.rehash(self.capacity() * 2);
                     return self.insert(k, v);
                 }
-                Some(new_hop) => {
-                    hop = new_hop;
-                }
+                Some(new_hop) => new_hop,
             }
         }
         let slots = &mut self.slots;
@@ -145,7 +143,7 @@ where
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
         for hop in (0..HOP_LIMIT).filter(|hop| hop_info.get(*hop)) {
-            let entry_idx = (bucket_idx + hop) % self.capacity();
+            let entry_idx = self.get_idx(bucket_idx, hop);
             match &self.slots[entry_idx].entry {
                 None => {
                     // TODO: Can we relax this such that, when deleting an
@@ -197,6 +195,10 @@ where
         hasher.finish()
     }
 
+    fn get_idx(&self, base: usize, hop: usize) -> usize {
+        (base + hop) % self.capacity()
+    }
+
     fn rehash(&mut self, new_capacity: usize) {
         // println!("Rehashing from {} to {}.", self.capacity(), new_capacity);
         let slots = mem::replace(&mut self.slots, vec![]);
@@ -211,40 +213,39 @@ where
         debug_assert_eq!(self.length, original_length);
     }
 
-    // Moves the empty slot at `hop` closer to `origin_idx`.
-    fn move_closer(&mut self, origin_idx: usize, current_hop: usize) -> Option<usize> {
-        debug_assert!(current_hop >= HOP_LIMIT);
-        let current_idx = (origin_idx + current_hop) % self.capacity();
-        debug_assert!(self.slots[current_idx].is_vacant());
-        for candidate_hop in (current_hop - HOP_LIMIT + 1)..current_hop {
-            let candidate_idx = (origin_idx + candidate_hop) % self.capacity();
-            let candidate_to_current_delta = current_hop - candidate_hop;
-            // Hop info for current_hop must be empty.
-            debug_assert!(candidate_to_current_delta < HOP_LIMIT);
-            debug_assert!(!self.slots[candidate_idx]
-                .hop_info
-                .get(candidate_to_current_delta));
-            // Find the earliest slot for `entry_idx` that isn't empty.
-            if let Some(victim_hop) = self.slots[candidate_idx].hop_info.first_index() {
-                if victim_hop >= candidate_to_current_delta {
+    // Moves the vacant slot at `hop` closer to `origin_idx`.
+    fn move_closer(&mut self, origin_idx: usize, vacant_hop: usize) -> Option<usize> {
+        debug_assert!(vacant_hop >= HOP_LIMIT);
+        let vacant_idx = self.get_idx(origin_idx, vacant_hop);
+        debug_assert!(self.slots[vacant_idx].is_vacant());
+        for candidate_hop in (vacant_hop - HOP_LIMIT + 1)..vacant_hop {
+            let candidate_idx = self.get_idx(origin_idx, candidate_hop);
+            let candidate_to_vacant = vacant_hop - candidate_hop;
+            // Hop info for vacant_hop must be empty.
+            debug_assert!(candidate_to_vacant < HOP_LIMIT);
+            debug_assert!(!self.slots[candidate_idx].is_occupied(candidate_to_vacant));
+            // Find the earliest slot for `candidate_idx` that isn't empty.
+            let victim_hop = match self.slots[candidate_idx].hop_info.first_index() {
+                Some(hop) if hop < candidate_to_vacant => hop,
+                _ => {
                     continue;
                 }
-                // Swap the victim entry with the empty slot.
-                let victim_idx = (candidate_idx + victim_hop) % self.capacity();
-                let victim_entry = mem::take(&mut self.slots[victim_idx].entry);
-                debug_assert!(self.slots[victim_idx].is_vacant());
-                self.slots[current_idx].entry = victim_entry;
-                self.slots[candidate_idx].set_occupied(victim_hop, false);
-                self.slots[candidate_idx].set_occupied(candidate_to_current_delta, true);
-                // println!(
-                //     "Moved an empty slot from hop/index {}/{} to {}/{}.",
-                //     current_hop,
-                //     current_idx,
-                //     candidate_hop + victim_hop,
-                //     victim_idx
-                // );
-                return Some(candidate_hop + victim_hop);
-            }
+            };
+            // Swap the victim entry with the empty slot.
+            let victim_idx = self.get_idx(candidate_idx, victim_hop);
+            let victim_entry = mem::take(&mut self.slots[victim_idx].entry);
+            debug_assert!(self.slots[victim_idx].is_vacant());
+            self.slots[vacant_idx].entry = victim_entry;
+            self.slots[candidate_idx].set_occupied(victim_hop, false);
+            self.slots[candidate_idx].set_occupied(candidate_to_vacant, true);
+            // println!(
+            //     "Moved an empty slot from hop/index {}/{} to {}/{}.",
+            //     vacant_hop,
+            //     vacant_idx,
+            //     candidate_hop + victim_hop,
+            //     victim_idx
+            // );
+            return Some(candidate_hop + victim_hop);
         }
         None
     }
@@ -253,7 +254,7 @@ where
     fn check_consistency(&self) -> bool {
         for (bucket_idx, bucket) in self.slots.iter().enumerate() {
             for hop in (0..HOP_LIMIT).filter(|hop| bucket.hop_info.get(*hop)) {
-                let entry_idx = (bucket_idx + hop) % self.capacity();
+                let entry_idx = self.get_idx(bucket_idx, hop);
                 if self.slots[entry_idx].is_vacant() {
                     println!(
                         "Bucket {} says hop {} / entry {} is occupied, but it's vacant.",
