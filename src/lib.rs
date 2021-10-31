@@ -80,9 +80,6 @@ where
 // TODO: Iterators.
 // TODO: Parameterize the hash function.
 // TODO: Parameterize the hop range.
-// TODO: Optimize insertion, with better profiling tools.
-// - WSL doesn't expose hardware perf counters.
-// - `cargo flamegraph` produces a ~blank graph.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -111,7 +108,7 @@ where
         }
         let capacity = self.capacity();
         let vacant_hop = (0..capacity).find(|hop| {
-            let entry_idx = (bucket_idx + hop) % capacity;
+            let entry_idx = self.get_idx(bucket_idx, *hop);
             self.slots[entry_idx].entry.is_none()
         });
         if vacant_hop.is_none() {
@@ -129,8 +126,8 @@ where
                 Some(new_hop) => new_hop,
             }
         }
+        let entry_idx = self.get_idx(bucket_idx, hop);
         let slots = &mut self.slots;
-        let entry_idx = (bucket_idx + hop) % capacity;
         debug_assert!(slots[entry_idx].is_vacant());
         debug_assert!(!slots[bucket_idx].has_hop(hop));
         slots[bucket_idx].set_hop(hop, true);
@@ -208,7 +205,7 @@ where
 
     // Private functions.
     fn get_bucket(&self, k: &K) -> usize {
-        self.get_hash(&k) as usize % self.capacity()
+        (self.get_hash(&k) as usize) & (self.capacity() - 1)
     }
 
     fn get_hash(&self, k: &K) -> u64 {
@@ -218,11 +215,10 @@ where
     }
 
     fn get_idx(&self, base: usize, hop: usize) -> usize {
-        (base + hop) % self.capacity()
+        (base + hop) & (self.capacity() - 1)
     }
 
     fn rehash(&mut self, new_capacity: usize) {
-        dbg!("Rehashing from {} to {}.", self.capacity(), new_capacity);
         let slots = mem::replace(&mut self.slots, vec![]);
         let original_length = self.length;
         self.slots.resize_with(new_capacity, Slot::new);
