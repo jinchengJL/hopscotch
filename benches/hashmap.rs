@@ -25,7 +25,7 @@ fn hashmap_get(c: &mut Criterion) {
     for key in 0..MAP_SIZE as i32 {
         map.insert(key * 2, key * 2);
     }
-    c.bench_function("hashmap insertion", |b| {
+    c.bench_function("hashmap get", |b| {
         let mut key: i32 = 0;
         b.iter(|| {
             map.get(&key);

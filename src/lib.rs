@@ -231,7 +231,7 @@ where
         debug_assert_eq!(self.length, original_length);
     }
 
-    // Moves the vacant slot at `hop` closer to `origin_idx`.
+    // Moves the vacant slot at `origin_idx + vacant_hop` closer to `origin_idx`.
     fn move_closer(&mut self, origin_idx: usize, vacant_hop: usize) -> Option<usize> {
         debug_assert!(vacant_hop >= HOP_RANGE);
         let vacant_idx = self.get_idx(origin_idx, vacant_hop);
