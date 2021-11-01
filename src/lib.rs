@@ -165,6 +165,13 @@ where
     }
 
     pub fn remove(&mut self, k: &K) -> Option<V> {
+        match self.remove_entry(k) {
+            Some((_, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    pub fn remove_entry(&mut self, k: &K) -> Option<(K, V)> {
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
         for hop in (0..HOP_RANGE).filter(|hop| hop_info.get(*hop)) {
@@ -177,7 +184,8 @@ where
                 Some(Entry { key, value: _ }) if key == k => {
                     self.slots[bucket_idx].set_hop(hop, false);
                     self.length -= 1;
-                    return Some(mem::take(&mut self.slots[entry_idx].entry).unwrap().value);
+                    let entry = mem::take(&mut self.slots[entry_idx].entry).unwrap();
+                    return Some((entry.key, entry.value));
                 }
                 _ => {}
             }
@@ -281,9 +289,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     #[test]
-    fn basic_test() {
+    fn test_basic() {
         let mut map: HsHashMap<i32, i32> = HsHashMap::new();
         assert_eq!(map.is_empty(), true);
         assert_eq!(map.len(), 0);
@@ -315,4 +324,1051 @@ mod tests {
         assert_eq!(map.len(), HOP_RANGE * 8 + 2);
         assert_eq!(map.is_empty(), false);
     }
+
+    #[test]
+    fn test_default_capacities() {
+        type HM = HsHashMap<i32, i32>;
+
+        let m = HM::new();
+        assert_eq!(m.capacity(), HOP_RANGE);
+
+        // let m = HM::default();
+        // assert_eq!(m.capacity(), HOP_RANGE);
+
+        // let m = HM::with_hasher(DefaultHashBuilder::default());
+        // assert_eq!(m.capacity(), HOP_RANGE);
+
+        // let m = HM::with_capacity(0);
+        // assert_eq!(m.capacity(), HOP_RANGE);
+
+        // let m = HM::with_capacity_and_hasher(0, DefaultHashBuilder::default());
+        // assert_eq!(m.capacity(), HOP_RANGE);
+
+        // let mut m = HM::new();
+        // m.insert(1, 1);
+        // m.insert(2, 2);
+        // m.remove(&1);
+        // m.remove(&2);
+        // m.shrink_to_fit();
+        // assert_eq!(m.capacity(), HOP_RANGE);
+
+        // let mut m = HM::new();
+        // m.reserve(0);
+        // assert_eq!(m.capacity(), HOP_RANGE);
+    }
+
+    // #[test]
+    // fn test_create_capacity_zero() {
+    //     let mut m = HsHashMap::with_capacity(0);
+
+    //     assert!(m.insert(1, 1).is_none());
+
+    //     assert!(m.contains_key(&1));
+    //     assert!(!m.contains_key(&0));
+    // }
+
+    #[test]
+    fn test_insert() {
+        let mut m = HsHashMap::new();
+        assert_eq!(m.len(), 0);
+        assert!(m.insert(1, 2).is_none());
+        assert_eq!(m.len(), 1);
+        assert!(m.insert(2, 4).is_none());
+        assert_eq!(m.len(), 2);
+        assert_eq!(*m.get(&1).unwrap(), 2);
+        assert_eq!(*m.get(&2).unwrap(), 4);
+    }
+
+    #[test]
+    fn test_clone() {
+        let mut m = HsHashMap::new();
+        assert_eq!(m.len(), 0);
+        assert!(m.insert(1, 2).is_none());
+        assert_eq!(m.len(), 1);
+        assert!(m.insert(2, 4).is_none());
+        assert_eq!(m.len(), 2);
+        #[allow(clippy::redundant_clone)]
+        let m2 = m.clone();
+        assert_eq!(*m2.get(&1).unwrap(), 2);
+        assert_eq!(*m2.get(&2).unwrap(), 4);
+        assert_eq!(m2.len(), 2);
+    }
+
+    #[test]
+    fn test_clone_from() {
+        let mut m = HsHashMap::new();
+        let mut m2 = HsHashMap::new();
+        assert_eq!(m.len(), 0);
+        assert!(m.insert(1, 2).is_none());
+        assert_eq!(m.len(), 1);
+        assert!(m.insert(2, 4).is_none());
+        assert_eq!(m.len(), 2);
+        m2.clone_from(&m);
+        assert_eq!(*m2.get(&1).unwrap(), 2);
+        assert_eq!(*m2.get(&2).unwrap(), 4);
+        assert_eq!(m2.len(), 2);
+    }
+
+    thread_local! { static DROP_VECTOR: RefCell<Vec<i32>> = RefCell::new(Vec::new()) }
+
+    #[derive(Hash, PartialEq, Eq)]
+    struct Droppable {
+        k: usize,
+    }
+
+    impl Droppable {
+        fn new(k: usize) -> Droppable {
+            DROP_VECTOR.with(|slot| {
+                slot.borrow_mut()[k] += 1;
+            });
+
+            Droppable { k }
+        }
+    }
+
+    impl Drop for Droppable {
+        fn drop(&mut self) {
+            DROP_VECTOR.with(|slot| {
+                slot.borrow_mut()[self.k] -= 1;
+            });
+        }
+    }
+
+    impl Clone for Droppable {
+        fn clone(&self) -> Self {
+            Droppable::new(self.k)
+        }
+    }
+
+    #[test]
+    fn test_drops() {
+        DROP_VECTOR.with(|slot| {
+            *slot.borrow_mut() = vec![0; 200];
+        });
+
+        {
+            let mut m = HsHashMap::new();
+
+            DROP_VECTOR.with(|v| {
+                for i in 0..200 {
+                    assert_eq!(v.borrow()[i], 0);
+                }
+            });
+
+            for i in 0..100 {
+                let d1 = Droppable::new(i);
+                let d2 = Droppable::new(i + 100);
+                m.insert(d1, d2);
+            }
+
+            DROP_VECTOR.with(|v| {
+                for i in 0..200 {
+                    assert_eq!(v.borrow()[i], 1);
+                }
+            });
+
+            for i in 0..50 {
+                let k = Droppable::new(i);
+                let v = m.remove(&k);
+
+                assert!(v.is_some());
+
+                DROP_VECTOR.with(|v| {
+                    assert_eq!(v.borrow()[i], 1);
+                    assert_eq!(v.borrow()[i + 100], 1);
+                });
+            }
+
+            DROP_VECTOR.with(|v| {
+                for i in 0..50 {
+                    assert_eq!(v.borrow()[i], 0);
+                    assert_eq!(v.borrow()[i + 100], 0);
+                }
+
+                for i in 50..100 {
+                    assert_eq!(v.borrow()[i], 1);
+                    assert_eq!(v.borrow()[i + 100], 1);
+                }
+            });
+        }
+
+        DROP_VECTOR.with(|v| {
+            for i in 0..200 {
+                assert_eq!(v.borrow()[i], 0);
+            }
+        });
+    }
+
+    // #[test]
+    // fn test_into_iter_drops() {
+    //     DROP_VECTOR.with(|v| {
+    //         *v.borrow_mut() = vec![0; 200];
+    //     });
+
+    //     let hm = {
+    //         let mut hm = HsHashMap::new();
+
+    //         DROP_VECTOR.with(|v| {
+    //             for i in 0..200 {
+    //                 assert_eq!(v.borrow()[i], 0);
+    //             }
+    //         });
+
+    //         for i in 0..100 {
+    //             let d1 = Droppable::new(i);
+    //             let d2 = Droppable::new(i + 100);
+    //             hm.insert(d1, d2);
+    //         }
+
+    //         DROP_VECTOR.with(|v| {
+    //             for i in 0..200 {
+    //                 assert_eq!(v.borrow()[i], 1);
+    //             }
+    //         });
+
+    //         hm
+    //     };
+
+    //     // By the way, ensure that cloning doesn't screw up the dropping.
+    //     drop(hm.clone());
+
+    //     {
+    //         let mut half = hm.into_iter().take(50);
+
+    //         DROP_VECTOR.with(|v| {
+    //             for i in 0..200 {
+    //                 assert_eq!(v.borrow()[i], 1);
+    //             }
+    //         });
+
+    //         #[allow(clippy::let_underscore_drop)] // kind-of a false positive
+    //         for _ in half.by_ref() {}
+
+    //         DROP_VECTOR.with(|v| {
+    //             let nk = (0..100).filter(|&i| v.borrow()[i] == 1).count();
+
+    //             let nv = (0..100).filter(|&i| v.borrow()[i + 100] == 1).count();
+
+    //             assert_eq!(nk, 50);
+    //             assert_eq!(nv, 50);
+    //         });
+    //     };
+
+    //     DROP_VECTOR.with(|v| {
+    //         for i in 0..200 {
+    //             assert_eq!(v.borrow()[i], 0);
+    //         }
+    //     });
+    // }
+
+    #[test]
+    fn test_empty_remove() {
+        let mut m: HsHashMap<i32, bool> = HsHashMap::new();
+        assert_eq!(m.remove(&0), None);
+    }
+
+    // #[test]
+    // fn test_empty_entry() {
+    //     let mut m: HsHashMap<i32, bool> = HsHashMap::new();
+    //     match m.entry(0) {
+    //         Occupied(_) => panic!(),
+    //         Vacant(_) => {}
+    //     }
+    //     assert!(*m.entry(0).or_insert(true));
+    //     assert_eq!(m.len(), 1);
+    // }
+
+    // #[test]
+    // fn test_empty_iter() {
+    //     let mut m: HsHashMap<i32, bool> = HsHashMap::new();
+    //     assert_eq!(m.drain().next(), None);
+    //     assert_eq!(m.keys().next(), None);
+    //     assert_eq!(m.values().next(), None);
+    //     assert_eq!(m.values_mut().next(), None);
+    //     assert_eq!(m.iter().next(), None);
+    //     assert_eq!(m.iter_mut().next(), None);
+    //     assert_eq!(m.len(), 0);
+    //     assert!(m.is_empty());
+    //     assert_eq!(m.into_iter().next(), None);
+    // }
+
+    #[test]
+    fn test_lots_of_insertions() {
+        let loop_end = 257;
+        let mut m = HsHashMap::new();
+
+        // Try this a few times to make sure we never screw up the hashmap's
+        // internal state.
+        for _ in 0..10 {
+            assert!(m.is_empty());
+
+            for i in 1..loop_end {
+                assert!(m.insert(i, i).is_none());
+
+                for j in 1..=i {
+                    let r = m.get(&j);
+                    assert_eq!(r, Some(&j));
+                }
+
+                for j in i + 1..loop_end {
+                    let r = m.get(&j);
+                    assert_eq!(r, None);
+                }
+            }
+
+            for i in loop_end..(loop_end * 2 - 1) {
+                assert!(!m.contains_key(&i));
+            }
+
+            // remove forwards
+            for i in 1..loop_end {
+                assert!(m.remove(&i).is_some());
+
+                for j in 1..=i {
+                    assert!(!m.contains_key(&j));
+                }
+
+                for j in i + 1..loop_end {
+                    assert!(m.contains_key(&j));
+                }
+            }
+
+            for i in 1..loop_end {
+                assert!(!m.contains_key(&i));
+            }
+
+            for i in 1..loop_end {
+                assert!(m.insert(i, i).is_none());
+            }
+
+            // remove backwards
+            for i in (1..loop_end).rev() {
+                assert!(m.remove(&i).is_some());
+
+                for j in i..loop_end {
+                    assert!(!m.contains_key(&j));
+                }
+
+                for j in 1..i {
+                    assert!(m.contains_key(&j));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_mut() {
+        let mut m = HsHashMap::new();
+        assert!(m.insert(1, 12).is_none());
+        assert!(m.insert(2, 8).is_none());
+        assert!(m.insert(5, 14).is_none());
+        let new = 100;
+        match m.get_mut(&5) {
+            None => panic!(),
+            Some(x) => *x = new,
+        }
+        assert_eq!(m.get(&5), Some(&new));
+    }
+
+    #[test]
+    fn test_insert_overwrite() {
+        let mut m = HsHashMap::new();
+        assert!(m.insert(1, 2).is_none());
+        assert_eq!(*m.get(&1).unwrap(), 2);
+        assert!(!m.insert(1, 3).is_none());
+        assert_eq!(*m.get(&1).unwrap(), 3);
+    }
+
+    // #[test]
+    // fn test_insert_unique_unchecked() {
+    //     let mut map = HsHashMap::new();
+    //     let (k1, v1) = map.insert_unique_unchecked(10, 11);
+    //     assert_eq!((&10, &mut 11), (k1, v1));
+    //     let (k2, v2) = map.insert_unique_unchecked(20, 21);
+    //     assert_eq!((&20, &mut 21), (k2, v2));
+    //     assert_eq!(Some(&11), map.get(&10));
+    //     assert_eq!(Some(&21), map.get(&20));
+    //     assert_eq!(None, map.get(&30));
+    // }
+
+    #[test]
+    fn test_is_empty() {
+        let mut m = HsHashMap::new();
+        assert!(m.insert(1, 2).is_none());
+        assert!(!m.is_empty());
+        assert!(m.remove(&1).is_some());
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut m = HsHashMap::new();
+        m.insert(1, 2);
+        assert_eq!(m.remove(&1), Some(2));
+        assert_eq!(m.remove(&1), None);
+    }
+
+    #[test]
+    fn test_remove_entry() {
+        let mut m = HsHashMap::new();
+        m.insert(1, 2);
+        assert_eq!(m.remove_entry(&1), Some((1, 2)));
+        assert_eq!(m.remove(&1), None);
+    }
+
+    // #[test]
+    // fn test_iterate() {
+    //     let mut m = HsHashMap::new();
+    //     for i in 0..32 {
+    //         assert!(m.insert(i, i * 2).is_none());
+    //     }
+    //     assert_eq!(m.len(), 32);
+
+    //     let mut observed: u32 = 0;
+
+    //     for (k, v) in &m {
+    //         assert_eq!(*v, *k * 2);
+    //         observed |= 1 << *k;
+    //     }
+    //     assert_eq!(observed, 0xFFFF_FFFF);
+    // }
+
+    // #[test]
+    // fn test_keys() {
+    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
+    //     let keys: Vec<_> = map.keys().copied().collect();
+    //     assert_eq!(keys.len(), 3);
+    //     assert!(keys.contains(&1));
+    //     assert!(keys.contains(&2));
+    //     assert!(keys.contains(&3));
+    // }
+
+    // #[test]
+    // fn test_values() {
+    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
+    //     let values: Vec<_> = map.values().copied().collect();
+    //     assert_eq!(values.len(), 3);
+    //     assert!(values.contains(&'a'));
+    //     assert!(values.contains(&'b'));
+    //     assert!(values.contains(&'c'));
+    // }
+
+    // #[test]
+    // fn test_values_mut() {
+    //     let vec = vec![(1, 1), (2, 2), (3, 3)];
+    //     let mut map: HsHashMap<_, _> = vec.into_iter().collect();
+    //     for value in map.values_mut() {
+    //         *value *= 2;
+    //     }
+    //     let values: Vec<_> = map.values().copied().collect();
+    //     assert_eq!(values.len(), 3);
+    //     assert!(values.contains(&2));
+    //     assert!(values.contains(&4));
+    //     assert!(values.contains(&6));
+    // }
+
+    // #[test]
+    // fn test_into_keys() {
+    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
+    //     let keys: Vec<_> = map.into_keys().collect();
+
+    //     assert_eq!(keys.len(), 3);
+    //     assert!(keys.contains(&1));
+    //     assert!(keys.contains(&2));
+    //     assert!(keys.contains(&3));
+    // }
+
+    // #[test]
+    // fn test_into_values() {
+    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
+    //     let values: Vec<_> = map.into_values().collect();
+
+    //     assert_eq!(values.len(), 3);
+    //     assert!(values.contains(&'a'));
+    //     assert!(values.contains(&'b'));
+    //     assert!(values.contains(&'c'));
+    // }
+
+    #[test]
+    fn test_find() {
+        let mut m = HsHashMap::new();
+        assert!(m.get(&1).is_none());
+        m.insert(1, 2);
+        match m.get(&1) {
+            None => panic!(),
+            Some(v) => assert_eq!(*v, 2),
+        }
+    }
+
+    // #[test]
+    // fn test_eq() {
+    //     let mut m1 = HsHashMap::new();
+    //     m1.insert(1, 2);
+    //     m1.insert(2, 3);
+    //     m1.insert(3, 4);
+
+    //     let mut m2 = HsHashMap::new();
+    //     m2.insert(1, 2);
+    //     m2.insert(2, 3);
+
+    //     assert!(m1 != m2);
+
+    //     m2.insert(3, 4);
+
+    //     assert_eq!(m1, m2);
+    // }
+
+    // #[test]
+    // fn test_show() {
+    //     let mut map = HsHashMap::new();
+    //     let empty: HsHashMap<i32, i32> = HsHashMap::new();
+
+    //     map.insert(1, 2);
+    //     map.insert(3, 4);
+
+    //     let map_str = format!("{:?}", map);
+
+    //     assert!(map_str == "{1: 2, 3: 4}" || map_str == "{3: 4, 1: 2}");
+    //     assert_eq!(format!("{:?}", empty), "{}");
+    // }
+
+    #[test]
+    fn test_expand() {
+        let mut m = HsHashMap::new();
+
+        assert_eq!(m.len(), 0);
+        assert!(m.is_empty());
+
+        let mut i = 0;
+        let old_cap = m.capacity();
+        while old_cap == m.capacity() {
+            m.insert(i, i);
+            i += 1;
+        }
+
+        assert_eq!(m.len(), i);
+        assert!(!m.is_empty());
+    }
+
+    // #[test]
+    // fn test_behavior_resize_policy() {
+    //     let mut m = HsHashMap::new();
+
+    //     assert_eq!(m.len(), 0);
+    //     assert_eq!(m.raw_capacity(), 1);
+    //     assert!(m.is_empty());
+
+    //     m.insert(0, 0);
+    //     m.remove(&0);
+    //     assert!(m.is_empty());
+    //     let initial_raw_cap = m.raw_capacity();
+    //     m.reserve(initial_raw_cap);
+    //     let raw_cap = m.raw_capacity();
+
+    //     assert_eq!(raw_cap, initial_raw_cap * 2);
+
+    //     let mut i = 0;
+    //     for _ in 0..raw_cap * 3 / 4 {
+    //         m.insert(i, i);
+    //         i += 1;
+    //     }
+    //     // three quarters full
+
+    //     assert_eq!(m.len(), i);
+    //     assert_eq!(m.raw_capacity(), raw_cap);
+
+    //     for _ in 0..raw_cap / 4 {
+    //         m.insert(i, i);
+    //         i += 1;
+    //     }
+    //     // half full
+
+    //     let new_raw_cap = m.raw_capacity();
+    //     assert_eq!(new_raw_cap, raw_cap * 2);
+
+    //     for _ in 0..raw_cap / 2 - 1 {
+    //         i -= 1;
+    //         m.remove(&i);
+    //         assert_eq!(m.raw_capacity(), new_raw_cap);
+    //     }
+    //     // A little more than one quarter full.
+    //     m.shrink_to_fit();
+    //     assert_eq!(m.raw_capacity(), raw_cap);
+    //     // again, a little more than half full
+    //     for _ in 0..raw_cap / 2 {
+    //         i -= 1;
+    //         m.remove(&i);
+    //     }
+    //     m.shrink_to_fit();
+
+    //     assert_eq!(m.len(), i);
+    //     assert!(!m.is_empty());
+    //     assert_eq!(m.raw_capacity(), initial_raw_cap);
+    // }
+
+    // #[test]
+    // fn test_reserve_shrink_to_fit() {
+    //     let mut m = HsHashMap::new();
+    //     m.insert(0, 0);
+    //     m.remove(&0);
+    //     assert!(m.capacity() >= m.len());
+    //     for i in 0..128 {
+    //         m.insert(i, i);
+    //     }
+    //     m.reserve(256);
+
+    //     let usable_cap = m.capacity();
+    //     for i in 128..(128 + 256) {
+    //         m.insert(i, i);
+    //         assert_eq!(m.capacity(), usable_cap);
+    //     }
+
+    //     for i in 100..(128 + 256) {
+    //         assert_eq!(m.remove(&i), Some(i));
+    //     }
+    //     m.shrink_to_fit();
+
+    //     assert_eq!(m.len(), 100);
+    //     assert!(!m.is_empty());
+    //     assert!(m.capacity() >= m.len());
+
+    //     for i in 0..100 {
+    //         assert_eq!(m.remove(&i), Some(i));
+    //     }
+    //     m.shrink_to_fit();
+    //     m.insert(0, 0);
+
+    //     assert_eq!(m.len(), 1);
+    //     assert!(m.capacity() >= m.len());
+    //     assert_eq!(m.remove(&0), Some(0));
+    // }
+
+    // #[test]
+    // fn test_from_iter() {
+    //     let xs = [(1, 1), (2, 2), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
+
+    //     let map: HsHashMap<_, _> = xs.iter().copied().collect();
+
+    //     for &(k, v) in &xs {
+    //         assert_eq!(map.get(&k), Some(&v));
+    //     }
+
+    //     assert_eq!(map.iter().len(), xs.len() - 1);
+    // }
+
+    // #[test]
+    // fn test_size_hint() {
+    //     let xs = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
+
+    //     let map: HsHashMap<_, _> = xs.iter().copied().collect();
+
+    //     let mut iter = map.iter();
+
+    //     for _ in iter.by_ref().take(3) {}
+
+    //     assert_eq!(iter.size_hint(), (3, Some(3)));
+    // }
+
+    // #[test]
+    // fn test_iter_len() {
+    //     let xs = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
+
+    //     let map: HsHashMap<_, _> = xs.iter().copied().collect();
+
+    //     let mut iter = map.iter();
+
+    //     for _ in iter.by_ref().take(3) {}
+
+    //     assert_eq!(iter.len(), 3);
+    // }
+
+    // #[test]
+    // fn test_mut_size_hint() {
+    //     let xs = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
+
+    //     let mut map: HsHashMap<_, _> = xs.iter().copied().collect();
+
+    //     let mut iter = map.iter_mut();
+
+    //     for _ in iter.by_ref().take(3) {}
+
+    //     assert_eq!(iter.size_hint(), (3, Some(3)));
+    // }
+
+    // #[test]
+    // fn test_iter_mut_len() {
+    //     let xs = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
+
+    //     let mut map: HsHashMap<_, _> = xs.iter().copied().collect();
+
+    //     let mut iter = map.iter_mut();
+
+    //     for _ in iter.by_ref().take(3) {}
+
+    //     assert_eq!(iter.len(), 3);
+    // }
+
+    // #[test]
+    // fn test_index() {
+    //     let mut map = HsHashMap::new();
+
+    //     map.insert(1, 2);
+    //     map.insert(2, 1);
+    //     map.insert(3, 4);
+
+    //     assert_eq!(map[&2], 1);
+    // }
+
+    // #[test]
+    // #[should_panic]
+    // fn test_index_nonexistent() {
+    //     let mut map = HsHashMap::new();
+
+    //     map.insert(1, 2);
+    //     map.insert(2, 1);
+    //     map.insert(3, 4);
+
+    //     #[allow(clippy::no_effect)] // false positive lint
+    //     map[&4];
+    // }
+
+    // #[test]
+    // fn test_entry() {
+    //     let xs = [(1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60)];
+
+    //     let mut map: HsHashMap<_, _> = xs.iter().copied().collect();
+
+    //     // Existing key (insert)
+    //     match map.entry(1) {
+    //         Vacant(_) => unreachable!(),
+    //         Occupied(mut view) => {
+    //             assert_eq!(view.get(), &10);
+    //             assert_eq!(view.insert(100), 10);
+    //         }
+    //     }
+    //     assert_eq!(map.get(&1).unwrap(), &100);
+    //     assert_eq!(map.len(), 6);
+
+    //     // Existing key (update)
+    //     match map.entry(2) {
+    //         Vacant(_) => unreachable!(),
+    //         Occupied(mut view) => {
+    //             let v = view.get_mut();
+    //             let new_v = (*v) * 10;
+    //             *v = new_v;
+    //         }
+    //     }
+    //     assert_eq!(map.get(&2).unwrap(), &200);
+    //     assert_eq!(map.len(), 6);
+
+    //     // Existing key (take)
+    //     match map.entry(3) {
+    //         Vacant(_) => unreachable!(),
+    //         Occupied(view) => {
+    //             assert_eq!(view.remove(), 30);
+    //         }
+    //     }
+    //     assert_eq!(map.get(&3), None);
+    //     assert_eq!(map.len(), 5);
+
+    //     // Inexistent key (insert)
+    //     match map.entry(10) {
+    //         Occupied(_) => unreachable!(),
+    //         Vacant(view) => {
+    //             assert_eq!(*view.insert(1000), 1000);
+    //         }
+    //     }
+    //     assert_eq!(map.get(&10).unwrap(), &1000);
+    //     assert_eq!(map.len(), 6);
+    // }
+
+    // #[test]
+    // fn test_entry_take_doesnt_corrupt() {
+    //     #![allow(deprecated)] //rand
+    //                           // Test for #19292
+    //     fn check(m: &HsHashMap<i32, ()>) {
+    //         for k in m.keys() {
+    //             assert!(m.contains_key(k), "{} is in keys() but not in the map?", k);
+    //         }
+    //     }
+
+    //     let mut m = HsHashMap::new();
+
+    //     let mut rng = {
+    //         let seed = u64::from_le_bytes(*b"testseed");
+    //         SmallRng::seed_from_u64(seed)
+    //     };
+
+    //     // Populate the map with some items.
+    //     for _ in 0..50 {
+    //         let x = rng.gen_range(-10..10);
+    //         m.insert(x, ());
+    //     }
+
+    //     for _ in 0..1000 {
+    //         let x = rng.gen_range(-10..10);
+    //         match m.entry(x) {
+    //             Vacant(_) => {}
+    //             Occupied(e) => {
+    //                 e.remove();
+    //             }
+    //         }
+
+    //         check(&m);
+    //     }
+    // }
+
+    // #[test]
+    // fn test_extend_ref() {
+    //     let mut a = HsHashMap::new();
+    //     a.insert(1, "one");
+    //     let mut b = HsHashMap::new();
+    //     b.insert(2, "two");
+    //     b.insert(3, "three");
+
+    //     a.extend(&b);
+
+    //     assert_eq!(a.len(), 3);
+    //     assert_eq!(a[&1], "one");
+    //     assert_eq!(a[&2], "two");
+    //     assert_eq!(a[&3], "three");
+    // }
+
+    // #[test]
+    // fn test_capacity_not_less_than_len() {
+    //     let mut a = HsHashMap::new();
+    //     let mut item = 0;
+
+    //     for _ in 0..116 {
+    //         a.insert(item, 0);
+    //         item += 1;
+    //     }
+
+    //     assert!(a.capacity() > a.len());
+
+    //     let free = a.capacity() - a.len();
+    //     for _ in 0..free {
+    //         a.insert(item, 0);
+    //         item += 1;
+    //     }
+
+    //     assert_eq!(a.len(), a.capacity());
+
+    //     // Insert at capacity should cause allocation.
+    //     a.insert(item, 0);
+    //     assert!(a.capacity() > a.len());
+    // }
+
+    // #[test]
+    // fn test_occupied_entry_key() {
+    //     let mut a = HsHashMap::new();
+    //     let key = "hello there";
+    //     let value = "value goes here";
+    //     assert!(a.is_empty());
+    //     a.insert(key, value);
+    //     assert_eq!(a.len(), 1);
+    //     assert_eq!(a[key], value);
+
+    //     match a.entry(key) {
+    //         Vacant(_) => panic!(),
+    //         Occupied(e) => assert_eq!(key, *e.key()),
+    //     }
+    //     assert_eq!(a.len(), 1);
+    //     assert_eq!(a[key], value);
+    // }
+
+    // #[test]
+    // fn test_vacant_entry_key() {
+    //     let mut a = HsHashMap::new();
+    //     let key = "hello there";
+    //     let value = "value goes here";
+
+    //     assert!(a.is_empty());
+    //     match a.entry(key) {
+    //         Occupied(_) => panic!(),
+    //         Vacant(e) => {
+    //             assert_eq!(key, *e.key());
+    //             e.insert(value);
+    //         }
+    //     }
+    //     assert_eq!(a.len(), 1);
+    //     assert_eq!(a[key], value);
+    // }
+
+    // #[test]
+    // fn test_occupied_entry_replace_entry_with() {
+    //     let mut a = HsHashMap::new();
+
+    //     let key = "a key";
+    //     let value = "an initial value";
+    //     let new_value = "a new value";
+
+    //     let entry = a.entry(key).insert(value).replace_entry_with(|k, v| {
+    //         assert_eq!(k, &key);
+    //         assert_eq!(v, value);
+    //         Some(new_value)
+    //     });
+
+    //     match entry {
+    //         Occupied(e) => {
+    //             assert_eq!(e.key(), &key);
+    //             assert_eq!(e.get(), &new_value);
+    //         }
+    //         Vacant(_) => panic!(),
+    //     }
+
+    //     assert_eq!(a[key], new_value);
+    //     assert_eq!(a.len(), 1);
+
+    //     let entry = match a.entry(key) {
+    //         Occupied(e) => e.replace_entry_with(|k, v| {
+    //             assert_eq!(k, &key);
+    //             assert_eq!(v, new_value);
+    //             None
+    //         }),
+    //         Vacant(_) => panic!(),
+    //     };
+
+    //     match entry {
+    //         Vacant(e) => assert_eq!(e.key(), &key),
+    //         Occupied(_) => panic!(),
+    //     }
+
+    //     assert!(!a.contains_key(key));
+    //     assert_eq!(a.len(), 0);
+    // }
+
+    // #[test]
+    // fn test_entry_and_replace_entry_with() {
+    //     let mut a = HsHashMap::new();
+
+    //     let key = "a key";
+    //     let value = "an initial value";
+    //     let new_value = "a new value";
+
+    //     let entry = a.entry(key).and_replace_entry_with(|_, _| panic!());
+
+    //     match entry {
+    //         Vacant(e) => assert_eq!(e.key(), &key),
+    //         Occupied(_) => panic!(),
+    //     }
+
+    //     a.insert(key, value);
+
+    //     let entry = a.entry(key).and_replace_entry_with(|k, v| {
+    //         assert_eq!(k, &key);
+    //         assert_eq!(v, value);
+    //         Some(new_value)
+    //     });
+
+    //     match entry {
+    //         Occupied(e) => {
+    //             assert_eq!(e.key(), &key);
+    //             assert_eq!(e.get(), &new_value);
+    //         }
+    //         Vacant(_) => panic!(),
+    //     }
+
+    //     assert_eq!(a[key], new_value);
+    //     assert_eq!(a.len(), 1);
+
+    //     let entry = a.entry(key).and_replace_entry_with(|k, v| {
+    //         assert_eq!(k, &key);
+    //         assert_eq!(v, new_value);
+    //         None
+    //     });
+
+    //     match entry {
+    //         Vacant(e) => assert_eq!(e.key(), &key),
+    //         Occupied(_) => panic!(),
+    //     }
+
+    //     assert!(!a.contains_key(key));
+    //     assert_eq!(a.len(), 0);
+    // }
+
+    // #[test]
+    // fn test_replace_entry_with_doesnt_corrupt() {
+    //     #![allow(deprecated)] //rand
+    //                           // Test for #19292
+    //     fn check(m: &HsHashMap<i32, ()>) {
+    //         for k in m.keys() {
+    //             assert!(m.contains_key(k), "{} is in keys() but not in the map?", k);
+    //         }
+    //     }
+
+    //     let mut m = HsHashMap::new();
+
+    //     let mut rng = {
+    //         let seed = u64::from_le_bytes(*b"testseed");
+    //         SmallRng::seed_from_u64(seed)
+    //     };
+
+    //     // Populate the map with some items.
+    //     for _ in 0..50 {
+    //         let x = rng.gen_range(-10..10);
+    //         m.insert(x, ());
+    //     }
+
+    //     for _ in 0..1000 {
+    //         let x = rng.gen_range(-10..10);
+    //         m.entry(x).and_replace_entry_with(|_, _| None);
+    //         check(&m);
+    //     }
+    // }
+
+    // #[test]
+    // fn test_retain() {
+    //     let mut map: HsHashMap<i32, i32> = (0..100).map(|x| (x, x * 10)).collect();
+
+    //     map.retain(|&k, _| k % 2 == 0);
+    //     assert_eq!(map.len(), 50);
+    //     assert_eq!(map[&2], 20);
+    //     assert_eq!(map[&4], 40);
+    //     assert_eq!(map[&6], 60);
+    // }
+
+    // #[test]
+    // fn test_drain_filter() {
+    //     {
+    //         let mut map: HsHashMap<i32, i32> = (0..8).map(|x| (x, x * 10)).collect();
+    //         let drained = map.drain_filter(|&k, _| k % 2 == 0);
+    //         let mut out = drained.collect::<Vec<_>>();
+    //         out.sort_unstable();
+    //         assert_eq!(vec![(0, 0), (2, 20), (4, 40), (6, 60)], out);
+    //         assert_eq!(map.len(), 4);
+    //     }
+    //     {
+    //         let mut map: HsHashMap<i32, i32> = (0..8).map(|x| (x, x * 10)).collect();
+    //         drop(map.drain_filter(|&k, _| k % 2 == 0));
+    //         assert_eq!(map.len(), 4);
+    //     }
+    // }
+
+    // #[test]
+    // fn test_const_with_hasher() {
+    //     use core::hash::BuildHasher;
+    //     use std::collections::hash_map::DefaultHasher;
+
+    //     #[derive(Clone)]
+    //     struct MyHasher;
+    //     impl BuildHasher for MyHasher {
+    //         type Hasher = DefaultHasher;
+
+    //         fn build_hasher(&self) -> DefaultHasher {
+    //             DefaultHasher::new()
+    //         }
+    //     }
+
+    //     const EMPTY_MAP: HsHashMap<u32, std::string::String, MyHasher> =
+    //         HsHashMap::with_hasher(MyHasher);
+
+    //     let mut map = EMPTY_MAP;
+    //     map.insert(17, "seventeen".to_owned());
+    //     assert_eq!("seventeen", map[&17]);
+    // }
 }
