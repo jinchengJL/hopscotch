@@ -4,7 +4,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::mem;
 
-const HOP_RANGE: usize = 32;
+const DEFAULT_HOP_RANGE: usize = 32;
 
 #[derive(Clone, Debug)]
 struct Entry<K, V>
@@ -21,11 +21,11 @@ struct Slot<K, V>
 where
     K: Hash + Eq,
 {
-    hop_info: Bitmap<HOP_RANGE>,
+    hop_info: Bitmap<DEFAULT_HOP_RANGE>,
     entry: Option<Entry<K, V>>,
 }
 
-// A logical hash bucket storing up to HOP_RANGE entries.
+// A logical hash bucket storing up to DEFAULT_HOP_RANGE entries.
 // TODO: Add a method for iterating over occupied hops.
 trait Bucket {
     fn has_hop(&self, hop: usize) -> bool;
@@ -42,6 +42,7 @@ where
 {
     slots: Vec<Slot<K, V>>,
     length: usize,
+    hop_range: usize,
 }
 
 impl<K, V> Slot<K, V>
@@ -79,18 +80,23 @@ where
 
 // TODO: Iterators.
 // TODO: Parameterize the hash function.
-// TODO: Parameterize the hop range.
+// TODO: Support zero capacity.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
 {
     // Public functions.
     pub fn new() -> HsHashMap<K, V> {
+        Self::with_hop_range(DEFAULT_HOP_RANGE)
+    }
+
+    pub fn with_hop_range(hop_range: usize) -> HsHashMap<K, V> {
         let mut slots: Vec<Slot<K, V>> = vec![];
-        slots.resize_with(HOP_RANGE, Slot::new);
+        slots.resize_with(hop_range, Slot::new);
         HsHashMap {
             slots: slots,
             length: 0,
+            hop_range: hop_range,
         }
     }
 
@@ -117,7 +123,7 @@ where
         }
         // Keep moving the empty slot closer to bucket_idx.
         let mut hop = vacant_hop.unwrap();
-        while hop >= HOP_RANGE {
+        while hop >= self.hop_range {
             hop = match self.move_closer(bucket_idx, hop) {
                 None => {
                     self.rehash(self.capacity() * 2);
@@ -139,7 +145,7 @@ where
     pub fn get(&self, k: &K) -> Option<&V> {
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
-        for hop in (0..HOP_RANGE).filter(|hop| hop_info.get(*hop)) {
+        for hop in (0..self.hop_range).filter(|hop| hop_info.get(*hop)) {
             let entry_idx = self.get_idx(bucket_idx, hop);
             match &self.slots[entry_idx].entry {
                 None => {
@@ -174,7 +180,7 @@ where
     pub fn remove_entry(&mut self, k: &K) -> Option<(K, V)> {
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
-        for hop in (0..HOP_RANGE).filter(|hop| hop_info.get(*hop)) {
+        for hop in (0..self.hop_range).filter(|hop| hop_info.get(*hop)) {
             let entry_idx = self.get_idx(bucket_idx, hop);
             match &self.slots[entry_idx].entry {
                 None => {
@@ -207,7 +213,7 @@ where
 
     pub fn clear(&mut self) {
         self.slots.clear();
-        self.slots.resize_with(HOP_RANGE, Slot::new);
+        self.slots.resize_with(self.hop_range, Slot::new);
         self.length = 0;
     }
 
@@ -241,14 +247,14 @@ where
 
     // Moves the vacant slot at `origin_idx + vacant_hop` closer to `origin_idx`.
     fn move_closer(&mut self, origin_idx: usize, vacant_hop: usize) -> Option<usize> {
-        debug_assert!(vacant_hop >= HOP_RANGE);
+        debug_assert!(vacant_hop >= self.hop_range);
         let vacant_idx = self.get_idx(origin_idx, vacant_hop);
         debug_assert!(self.slots[vacant_idx].is_vacant());
-        for candidate_hop in (vacant_hop - HOP_RANGE + 1)..vacant_hop {
+        for candidate_hop in (vacant_hop - self.hop_range + 1)..vacant_hop {
             let candidate_idx = self.get_idx(origin_idx, candidate_hop);
             let candidate_to_vacant = vacant_hop - candidate_hop;
             // Hop info for vacant_hop must be empty.
-            debug_assert!(candidate_to_vacant < HOP_RANGE);
+            debug_assert!(candidate_to_vacant < self.hop_range);
             debug_assert!(!self.slots[candidate_idx].has_hop(candidate_to_vacant));
             // Find the earliest slot for `candidate_idx` that isn't empty.
             let victim_hop = match self.slots[candidate_idx].hop_info.first_index() {
@@ -271,7 +277,7 @@ where
     #[cfg(test)]
     fn check_consistency(&self) -> bool {
         for (bucket_idx, bucket) in self.slots.iter().enumerate() {
-            for hop in (0..HOP_RANGE).filter(|hop| bucket.hop_info.get(*hop)) {
+            for hop in (0..self.hop_range).filter(|hop| bucket.hop_info.get(*hop)) {
                 let entry_idx = self.get_idx(bucket_idx, hop);
                 if self.slots[entry_idx].is_vacant() {
                     println!(
@@ -296,7 +302,7 @@ mod tests {
         let mut map: HsHashMap<i32, i32> = HsHashMap::new();
         assert_eq!(map.is_empty(), true);
         assert_eq!(map.len(), 0);
-        for key in 0..(HOP_RANGE * 16) as i32 {
+        for key in 0..(DEFAULT_HOP_RANGE * 16) as i32 {
             assert_eq!(map.get(&key), None);
             assert_eq!(map.insert(key, key), None);
             assert_eq!(map.is_empty(), false);
@@ -315,13 +321,13 @@ mod tests {
             assert_eq!(*map.get(&1).unwrap(), val);
         }
         assert!(map.check_consistency());
-        assert_eq!(map.len(), HOP_RANGE * 16);
-        for key in 2..(HOP_RANGE * 8) as i32 {
+        assert_eq!(map.len(), DEFAULT_HOP_RANGE * 16);
+        for key in 2..(DEFAULT_HOP_RANGE * 8) as i32 {
             assert_eq!(*map.get(&key).unwrap(), key);
             assert_eq!(map.remove(&key), Some(key), "{:?}", key);
         }
         assert!(map.check_consistency());
-        assert_eq!(map.len(), HOP_RANGE * 8 + 2);
+        assert_eq!(map.len(), DEFAULT_HOP_RANGE * 8 + 2);
         assert_eq!(map.is_empty(), false);
     }
 
@@ -330,19 +336,19 @@ mod tests {
         type HM = HsHashMap<i32, i32>;
 
         let m = HM::new();
-        assert_eq!(m.capacity(), HOP_RANGE);
+        assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let m = HM::default();
-        // assert_eq!(m.capacity(), HOP_RANGE);
+        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let m = HM::with_hasher(DefaultHashBuilder::default());
-        // assert_eq!(m.capacity(), HOP_RANGE);
+        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let m = HM::with_capacity(0);
-        // assert_eq!(m.capacity(), HOP_RANGE);
+        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let m = HM::with_capacity_and_hasher(0, DefaultHashBuilder::default());
-        // assert_eq!(m.capacity(), HOP_RANGE);
+        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let mut m = HM::new();
         // m.insert(1, 1);
@@ -350,11 +356,11 @@ mod tests {
         // m.remove(&1);
         // m.remove(&2);
         // m.shrink_to_fit();
-        // assert_eq!(m.capacity(), HOP_RANGE);
+        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let mut m = HM::new();
         // m.reserve(0);
-        // assert_eq!(m.capacity(), HOP_RANGE);
+        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
     }
 
     // #[test]
