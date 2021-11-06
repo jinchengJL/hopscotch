@@ -1,5 +1,7 @@
 use bitmaps::Bitmap;
 use std::collections::hash_map::DefaultHasher;
+use std::fmt;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::iter::Extend;
@@ -39,7 +41,7 @@ trait Bucket {
     fn is_full(&self) -> bool;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -366,6 +368,18 @@ impl<'a, K: Hash + Eq, V> Iterator for IntoValues<K, V> {
     }
 }
 
+impl<K: Hash + Eq, V: PartialEq> PartialEq for HsHashMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        self.iter()
+            .all(|(k, v)| other.get(k).map_or(false, |other_v| v == other_v))
+    }
+}
+
+impl<K: Hash + Eq, V: Eq> Eq for HsHashMap<K, V> {}
+
 impl<K, V> Index<&K> for HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -376,11 +390,28 @@ where
     }
 }
 
+impl<K, V> Debug for HsHashMap<K, V>
+where
+    K: Hash + Eq + Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl<K: Hash + Eq, V> Default for HsHashMap<K, V> {
+    fn default() -> HsHashMap<K, V> {
+        HsHashMap::new()
+    }
+}
+
 // TODO: Add missing features:
 // - Custom hash function.
 // - Zero capacity.
+// - reserve, shrink.
+// - Drain iterator.
 // - Manipulating the raw entry.
-// - Equality.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -669,8 +700,8 @@ mod tests {
         let m = HM::new();
         assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
-        // let m = HM::default();
-        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        let m = HM::default();
+        assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
         // let m = HM::with_hasher(DefaultHashBuilder::default());
         // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
@@ -1142,37 +1173,57 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_eq() {
-    //     let mut m1 = HsHashMap::new();
-    //     m1.insert(1, 2);
-    //     m1.insert(2, 3);
-    //     m1.insert(3, 4);
+    #[test]
+    fn test_eq() {
+        let mut m1 = HsHashMap::new();
+        m1.insert(1, 2);
+        m1.insert(2, 3);
+        m1.insert(3, 4);
 
-    //     let mut m2 = HsHashMap::new();
-    //     m2.insert(1, 2);
-    //     m2.insert(2, 3);
+        let mut m2 = HsHashMap::new();
+        m2.insert(1, 2);
+        m2.insert(2, 3);
 
-    //     assert!(m1 != m2);
+        assert!(m1 != m2);
 
-    //     m2.insert(3, 4);
+        m2.insert(3, 4);
 
-    //     assert_eq!(m1, m2);
-    // }
+        assert_eq!(m1, m2);
+    }
 
-    // #[test]
-    // fn test_show() {
-    //     let mut map = HsHashMap::new();
-    //     let empty: HsHashMap<i32, i32> = HsHashMap::new();
+    #[test]
+    fn test_partial_eq() {
+        let mut m1: HsHashMap<i32, f32> = HsHashMap::new();
+        m1.insert(1, 2.2);
+        m1.insert(2, 3.3);
+        m1.insert(3, 4.4);
 
-    //     map.insert(1, 2);
-    //     map.insert(3, 4);
+        let mut m2: HsHashMap<i32, f32> = HsHashMap::new();
+        m2.insert(1, 2.2);
+        m2.insert(2, 3.3);
+        assert!(m1 != m2);
 
-    //     let map_str = format!("{:?}", map);
+        m2.insert(3, 4.4);
+        assert_eq!(m1, m2);
 
-    //     assert!(map_str == "{1: 2, 3: 4}" || map_str == "{3: 4, 1: 2}");
-    //     assert_eq!(format!("{:?}", empty), "{}");
-    // }
+        m2.insert(4, f32::NAN);
+        m2.insert(4, f32::NAN);
+        assert_ne!(m1, m2);
+    }
+
+    #[test]
+    fn test_show() {
+        let mut map = HsHashMap::new();
+        let empty: HsHashMap<i32, i32> = HsHashMap::new();
+
+        map.insert(1, 2);
+        map.insert(3, 4);
+
+        let map_str = format!("{:?}", map);
+
+        assert!(map_str == "{1: 2, 3: 4}" || map_str == "{3: 4, 1: 2}");
+        assert_eq!(format!("{:?}", empty), "{}");
+    }
 
     #[test]
     fn test_expand() {
