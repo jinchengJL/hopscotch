@@ -2,8 +2,11 @@ use bitmaps::Bitmap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::iter;
+use std::iter::Extend;
+use std::iter::FromIterator;
+use std::iter::FusedIterator;
 use std::mem;
+use std::ops::Index;
 
 const DEFAULT_HOP_RANGE: usize = 32;
 
@@ -120,7 +123,7 @@ impl<'a, K: Hash + Eq, V> Iterator for Iter<'a, K, V> {
 }
 
 impl<'a, K: Hash + Eq, V> ExactSizeIterator for Iter<'a, K, V> {}
-impl<'a, K: Hash + Eq, V> iter::FusedIterator for Iter<'a, K, V> {}
+impl<'a, K: Hash + Eq, V> FusedIterator for Iter<'a, K, V> {}
 
 pub struct IterMut<'a, K, V>
 where
@@ -174,7 +177,7 @@ where
 }
 
 impl<'a, K: Hash + Eq, V> ExactSizeIterator for IterMut<'a, K, V> {}
-impl<'a, K: Hash + Eq, V> iter::FusedIterator for IterMut<'a, K, V> {}
+impl<'a, K: Hash + Eq, V> FusedIterator for IterMut<'a, K, V> {}
 
 pub struct IntoIter<K, V>
 where
@@ -221,7 +224,7 @@ where
 }
 
 impl<K: Hash + Eq, V> ExactSizeIterator for IntoIter<K, V> {}
-impl<K: Hash + Eq, V> iter::FusedIterator for IntoIter<K, V> {}
+impl<K: Hash + Eq, V> FusedIterator for IntoIter<K, V> {}
 
 impl<'a, K: Hash + Eq, V> IntoIterator for &'a HsHashMap<K, V> {
     type Item = (&'a K, &'a V);
@@ -247,7 +250,7 @@ impl<K: Hash + Eq, V> IntoIterator for HsHashMap<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V> iter::Extend<(K, V)> for HsHashMap<K, V> {
+impl<K: Hash + Eq, V> Extend<(K, V)> for HsHashMap<K, V> {
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = (K, V)>,
@@ -259,7 +262,7 @@ impl<K: Hash + Eq, V> iter::Extend<(K, V)> for HsHashMap<K, V> {
     }
 }
 
-impl<'a, K, V> iter::Extend<(&'a K, &'a V)> for HsHashMap<K, V>
+impl<'a, K, V> Extend<(&'a K, &'a V)> for HsHashMap<K, V>
 where
     K: Eq + Hash + Copy,
     V: Copy,
@@ -272,7 +275,7 @@ where
     }
 }
 
-impl<K: Hash + Eq, V> iter::FromIterator<(K, V)> for HsHashMap<K, V> {
+impl<K: Hash + Eq, V> FromIterator<(K, V)> for HsHashMap<K, V> {
     fn from_iter<T>(iter: T) -> Self
     where
         T: IntoIterator<Item = (K, V)>,
@@ -363,12 +366,21 @@ impl<'a, K: Hash + Eq, V> Iterator for IntoValues<K, V> {
     }
 }
 
+impl<K, V> Index<&K> for HsHashMap<K, V>
+where
+    K: Hash + Eq,
+{
+    type Output = V;
+    fn index(&self, key: &K) -> &V {
+        self.get(key).expect("no entry found for key")
+    }
+}
+
 // TODO: Add missing features:
 // - Custom hash function.
 // - Zero capacity.
 // - Manipulating the raw entry.
 // - Equality.
-// - Index operator.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -1338,29 +1350,29 @@ mod tests {
         assert_eq!(iter.len(), 3);
     }
 
-    // #[test]
-    // fn test_index() {
-    //     let mut map = HsHashMap::new();
+    #[test]
+    fn test_index() {
+        let mut map = HsHashMap::new();
 
-    //     map.insert(1, 2);
-    //     map.insert(2, 1);
-    //     map.insert(3, 4);
+        map.insert(1, 2);
+        map.insert(2, 1);
+        map.insert(3, 4);
 
-    //     assert_eq!(map[&2], 1);
-    // }
+        assert_eq!(map[&2], 1);
+    }
 
-    // #[test]
-    // #[should_panic]
-    // fn test_index_nonexistent() {
-    //     let mut map = HsHashMap::new();
+    #[test]
+    #[should_panic]
+    fn test_index_nonexistent() {
+        let mut map = HsHashMap::new();
 
-    //     map.insert(1, 2);
-    //     map.insert(2, 1);
-    //     map.insert(3, 4);
+        map.insert(1, 2);
+        map.insert(2, 1);
+        map.insert(3, 4);
 
-    //     #[allow(clippy::no_effect)] // false positive lint
-    //     map[&4];
-    // }
+        #[allow(clippy::no_effect)] // false positive lint
+        map[&4];
+    }
 
     // #[test]
     // fn test_entry() {
@@ -1459,9 +1471,9 @@ mod tests {
         a.extend(&b);
 
         assert_eq!(a.len(), 3);
-        // assert_eq!(a[&1], "one");
-        // assert_eq!(a[&2], "two");
-        // assert_eq!(a[&3], "three");
+        assert_eq!(a[&1], "one");
+        assert_eq!(a[&2], "two");
+        assert_eq!(a[&3], "three");
     }
 
     #[test]
