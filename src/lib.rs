@@ -27,7 +27,7 @@ where
 }
 
 // A logical hash bucket storing up to DEFAULT_HOP_RANGE entries.
-// TODO: Add a method for iterating over occupied hops.
+// TODO: Add an iterator over occupied hops.
 trait Bucket {
     fn has_hop(&self, hop: usize) -> bool;
 
@@ -247,10 +247,7 @@ impl<K: Hash + Eq, V> IntoIterator for HsHashMap<K, V> {
     }
 }
 
-impl<K, V> iter::Extend<(K, V)> for HsHashMap<K, V>
-where
-    K: Hash + Eq,
-{
+impl<K: Hash + Eq, V> iter::Extend<(K, V)> for HsHashMap<K, V> {
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = (K, V)>,
@@ -259,6 +256,19 @@ where
         for (k, v) in iter.into_iter() {
             self.insert(k, v);
         }
+    }
+}
+
+impl<'a, K, V> iter::Extend<(&'a K, &'a V)> for HsHashMap<K, V>
+where
+    K: Eq + Hash + Copy,
+    V: Copy,
+{
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = (&'a K, &'a V)>,
+    {
+        self.extend(iter.into_iter().map(|(&k, &v)| (k, v)));
     }
 }
 
@@ -273,8 +283,92 @@ impl<K: Hash + Eq, V> iter::FromIterator<(K, V)> for HsHashMap<K, V> {
     }
 }
 
-// TODO: Parameterize the hash function.
-// TODO: Support zero capacity.
+pub struct Keys<'a, K: Hash + Eq, V> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: Hash + Eq, V> Iterator for Keys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+pub struct IntoKeys<K: Hash + Eq, V> {
+    inner: IntoIter<K, V>,
+}
+
+impl<'a, K: Hash + Eq, V> Iterator for IntoKeys<K, V> {
+    type Item = K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+pub struct Values<'a, K: Hash + Eq, V> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: Hash + Eq, V> Iterator for Values<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+pub struct ValuesMut<'a, K: Hash + Eq, V> {
+    inner: IterMut<'a, K, V>,
+}
+
+impl<'a, K: Hash + Eq, V> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+pub struct IntoValues<K: Hash + Eq, V> {
+    inner: IntoIter<K, V>,
+}
+
+impl<'a, K: Hash + Eq, V> Iterator for IntoValues<K, V> {
+    type Item = V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+// TODO: Add missing features:
+// - Custom hash function.
+// - Zero capacity.
+// - Manipulating the raw entry.
+// - Equality.
+// - Index operator.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -417,6 +511,32 @@ where
 
     pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
         IterMut::new(self)
+    }
+
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys { inner: self.iter() }
+    }
+
+    pub fn into_keys(self) -> IntoKeys<K, V> {
+        IntoKeys {
+            inner: self.into_iter(),
+        }
+    }
+
+    pub fn values(&self) -> Values<'_, K, V> {
+        Values { inner: self.iter() }
+    }
+
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        ValuesMut {
+            inner: self.iter_mut(),
+        }
+    }
+
+    pub fn into_values(self) -> IntoValues<K, V> {
+        IntoValues {
+            inner: self.into_iter(),
+        }
     }
 
     // Private functions.
@@ -787,9 +907,9 @@ mod tests {
     fn test_empty_iter() {
         let mut m: HsHashMap<i32, bool> = HsHashMap::new();
         //     assert_eq!(m.drain().next(), None);
-        //     assert_eq!(m.keys().next(), None);
-        //     assert_eq!(m.values().next(), None);
-        //     assert_eq!(m.values_mut().next(), None);
+        assert_eq!(m.keys().next(), None);
+        assert_eq!(m.values().next(), None);
+        assert_eq!(m.values_mut().next(), None);
         assert_eq!(m.iter().next(), None);
         assert_eq!(m.iter_mut().next(), None);
         assert_eq!(m.len(), 0);
@@ -884,18 +1004,6 @@ mod tests {
         assert_eq!(*m.get(&1).unwrap(), 3);
     }
 
-    // #[test]
-    // fn test_insert_unique_unchecked() {
-    //     let mut map = HsHashMap::new();
-    //     let (k1, v1) = map.insert_unique_unchecked(10, 11);
-    //     assert_eq!((&10, &mut 11), (k1, v1));
-    //     let (k2, v2) = map.insert_unique_unchecked(20, 21);
-    //     assert_eq!((&20, &mut 21), (k2, v2));
-    //     assert_eq!(Some(&11), map.get(&10));
-    //     assert_eq!(Some(&21), map.get(&20));
-    //     assert_eq!(None, map.get(&30));
-    // }
-
     #[test]
     fn test_is_empty() {
         let mut m = HsHashMap::new();
@@ -951,65 +1059,65 @@ mod tests {
         assert_eq!(observed, 0xFFFF_FFFF);
     }
 
-    // #[test]
-    // fn test_keys() {
-    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
-    //     let keys: Vec<_> = map.keys().copied().collect();
-    //     assert_eq!(keys.len(), 3);
-    //     assert!(keys.contains(&1));
-    //     assert!(keys.contains(&2));
-    //     assert!(keys.contains(&3));
-    // }
+    #[test]
+    fn test_keys() {
+        let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+        let map: HsHashMap<_, _> = vec.into_iter().collect();
+        let keys: Vec<_> = map.keys().copied().collect();
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&1));
+        assert!(keys.contains(&2));
+        assert!(keys.contains(&3));
+    }
 
-    // #[test]
-    // fn test_values() {
-    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
-    //     let values: Vec<_> = map.values().copied().collect();
-    //     assert_eq!(values.len(), 3);
-    //     assert!(values.contains(&'a'));
-    //     assert!(values.contains(&'b'));
-    //     assert!(values.contains(&'c'));
-    // }    
+    #[test]
+    fn test_values() {
+        let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+        let map: HsHashMap<_, _> = vec.into_iter().collect();
+        let values: Vec<_> = map.values().copied().collect();
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&'a'));
+        assert!(values.contains(&'b'));
+        assert!(values.contains(&'c'));
+    }
 
-    // #[test]
-    // fn test_values_mut() {
-    //     let vec = vec![(1, 1), (2, 2), (3, 3)];
-    //     let mut map: HsHashMap<_, _> = vec.into_iter().collect();
-    //     for value in map.values_mut() {
-    //         *value *= 2;
-    //     }
-    //     let values: Vec<_> = map.values().copied().collect();
-    //     assert_eq!(values.len(), 3);
-    //     assert!(values.contains(&2));
-    //     assert!(values.contains(&4));
-    //     assert!(values.contains(&6));
-    // }
+    #[test]
+    fn test_values_mut() {
+        let vec = vec![(1, 1), (2, 2), (3, 3)];
+        let mut map: HsHashMap<_, _> = vec.into_iter().collect();
+        for value in map.values_mut() {
+            *value *= 2;
+        }
+        let values: Vec<_> = map.values().copied().collect();
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&2));
+        assert!(values.contains(&4));
+        assert!(values.contains(&6));
+    }
 
-    // #[test]
-    // fn test_into_keys() {
-    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
-    //     let keys: Vec<_> = map.into_keys().collect();
+    #[test]
+    fn test_into_keys() {
+        let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+        let map: HsHashMap<_, _> = vec.into_iter().collect();
+        let keys: Vec<_> = map.into_keys().collect();
 
-    //     assert_eq!(keys.len(), 3);
-    //     assert!(keys.contains(&1));
-    //     assert!(keys.contains(&2));
-    //     assert!(keys.contains(&3));
-    // }
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&1));
+        assert!(keys.contains(&2));
+        assert!(keys.contains(&3));
+    }
 
-    // #[test]
-    // fn test_into_values() {
-    //     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    //     let map: HsHashMap<_, _> = vec.into_iter().collect();
-    //     let values: Vec<_> = map.into_values().collect();
+    #[test]
+    fn test_into_values() {
+        let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+        let map: HsHashMap<_, _> = vec.into_iter().collect();
+        let values: Vec<_> = map.into_values().collect();
 
-    //     assert_eq!(values.len(), 3);
-    //     assert!(values.contains(&'a'));
-    //     assert!(values.contains(&'b'));
-    //     assert!(values.contains(&'c'));
-    // }
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&'a'));
+        assert!(values.contains(&'b'));
+        assert!(values.contains(&'c'));
+    }
 
     #[test]
     fn test_find() {
@@ -1340,21 +1448,21 @@ mod tests {
     //     }
     // }
 
-    // #[test]
-    // fn test_extend_ref() {
-    //     let mut a = HsHashMap::new();
-    //     a.insert(1, "one");
-    //     let mut b = HsHashMap::new();
-    //     b.insert(2, "two");
-    //     b.insert(3, "three");
+    #[test]
+    fn test_extend_ref() {
+        let mut a = HsHashMap::new();
+        a.insert(1, "one");
+        let mut b = HsHashMap::new();
+        b.insert(2, "two");
+        b.insert(3, "three");
 
-    //     a.extend(&b);
+        a.extend(&b);
 
-    //     assert_eq!(a.len(), 3);
-    //     assert_eq!(a[&1], "one");
-    //     assert_eq!(a[&2], "two");
-    //     assert_eq!(a[&3], "three");
-    // }
+        assert_eq!(a.len(), 3);
+        // assert_eq!(a[&1], "one");
+        // assert_eq!(a[&2], "two");
+        // assert_eq!(a[&3], "three");
+    }
 
     #[test]
     fn test_capacity_not_less_than_len() {
@@ -1548,23 +1656,6 @@ mod tests {
     //     assert_eq!(map[&2], 20);
     //     assert_eq!(map[&4], 40);
     //     assert_eq!(map[&6], 60);
-    // }
-
-    // #[test]
-    // fn test_drain_filter() {
-    //     {
-    //         let mut map: HsHashMap<i32, i32> = (0..8).map(|x| (x, x * 10)).collect();
-    //         let drained = map.drain_filter(|&k, _| k % 2 == 0);
-    //         let mut out = drained.collect::<Vec<_>>();
-    //         out.sort_unstable();
-    //         assert_eq!(vec![(0, 0), (2, 20), (4, 40), (6, 60)], out);
-    //         assert_eq!(map.len(), 4);
-    //     }
-    //     {
-    //         let mut map: HsHashMap<i32, i32> = (0..8).map(|x| (x, x * 10)).collect();
-    //         drop(map.drain_filter(|&k, _| k % 2 == 0));
-    //         assert_eq!(map.len(), 4);
-    //     }
     // }
 
     // #[test]
