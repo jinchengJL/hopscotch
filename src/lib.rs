@@ -406,10 +406,8 @@ impl<K: Hash + Eq, V> Default for HsHashMap<K, V> {
     }
 }
 
-// TODO: Add missing features:
+// TODO: Missing features compared to hash_map::HashMap:
 // - Custom hash function.
-// - Zero capacity.
-// - reserve, shrink.
 // - Drain iterator.
 // - Manipulating the raw entry.
 impl<K, V> HsHashMap<K, V>
@@ -421,20 +419,30 @@ where
         Self::with_hop_range(DEFAULT_HOP_RANGE)
     }
 
+    pub fn with_capacity(capacity: usize) -> HsHashMap<K, V> {
+        HsHashMap::with_capacity_and_hop_range(capacity, DEFAULT_HOP_RANGE)
+    }
+
     pub fn with_hop_range(hop_range: usize) -> HsHashMap<K, V> {
-        let mut slots: Vec<Slot<K, V>> = vec![];
-        slots.resize_with(hop_range, Slot::new);
-        HsHashMap {
-            slots: slots,
+        HsHashMap::with_capacity_and_hop_range(0, hop_range)
+    }
+
+    pub fn with_capacity_and_hop_range(capacity: usize, hop_range: usize) -> HsHashMap<K, V> {
+        let mut map = HsHashMap {
+            slots: vec![],
             length: 0,
             hop_range: hop_range,
-        }
+        };
+        map.reserve(capacity);
+        map
     }
 
     // This is actually insert_or_assign() in C++.
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
-        // First, try to find `k`.
-        if let Some(val) = self.get_mut(&k) {
+        if self.capacity() == 0 {
+            self.rehash(self.hop_range);
+        } else if let Some(val) = self.get_mut(&k) {
+            // Found `k`.
             return Some(mem::replace(val, v)); // std::exchange
         }
         // If `k` isn't present, find the closest empty slot, and insert it.
@@ -474,6 +482,9 @@ where
     }
 
     pub fn get(&self, k: &K) -> Option<&V> {
+        if self.capacity() == 0 {
+            return None;
+        }
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
         for hop in (0..self.hop_range).filter(|hop| hop_info.get(*hop)) {
@@ -509,6 +520,9 @@ where
     }
 
     pub fn remove_entry(&mut self, k: &K) -> Option<(K, V)> {
+        if self.capacity() == 0 {
+            return None;
+        }
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
         for hop in (0..self.hop_range).filter(|hop| hop_info.get(*hop)) {
@@ -543,9 +557,7 @@ where
     }
 
     pub fn clear(&mut self) {
-        self.slots.clear();
-        self.slots.resize_with(self.hop_range, Slot::new);
-        self.length = 0;
+        *self = HsHashMap::new();
     }
 
     pub fn iter(&self) -> Iter<'_, K, V> {
@@ -582,8 +594,35 @@ where
         }
     }
 
+    pub fn reserve(&mut self, additional: usize) {
+        if additional == 0 {
+            return;
+        }
+        // TODO: There's probably a better way to do this.
+        let mut new_capacity = self.hop_range;
+        while (new_capacity < self.len())
+            || ((new_capacity <= usize::MAX / 2) && (new_capacity - self.len()) < additional)
+        {
+            new_capacity *= 2;
+        }
+        self.rehash(new_capacity);
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        if self.len() == 0 {
+            self.clear();
+            return;
+        }
+        let mut new_capacity = self.hop_range;
+        while (new_capacity <= usize::MAX / 2) && (new_capacity < self.len()) {
+            new_capacity *= 2;
+        }
+        self.rehash(new_capacity);
+    }
+
     // Private functions.
     fn get_bucket(&self, k: &K) -> usize {
+        debug_assert!(self.capacity() != 0);
         let mut hasher = DefaultHasher::new();
         k.hash(&mut hasher);
         let hash = hasher.finish();
@@ -694,46 +733,46 @@ mod tests {
     }
 
     #[test]
-    fn test_default_capacities() {
+    fn test_zero_capacities() {
         type HM = HsHashMap<i32, i32>;
 
         let m = HM::new();
-        assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        assert_eq!(m.capacity(), 0);
 
         let m = HM::default();
-        assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        assert_eq!(m.capacity(), 0);
 
         // let m = HM::with_hasher(DefaultHashBuilder::default());
         // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
-        // let m = HM::with_capacity(0);
-        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        let m = HM::with_capacity(0);
+        assert_eq!(m.capacity(), 0);
 
         // let m = HM::with_capacity_and_hasher(0, DefaultHashBuilder::default());
         // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
 
-        // let mut m = HM::new();
-        // m.insert(1, 1);
-        // m.insert(2, 2);
-        // m.remove(&1);
-        // m.remove(&2);
-        // m.shrink_to_fit();
-        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        let mut m = HM::new();
+        m.insert(1, 1);
+        m.insert(2, 2);
+        m.remove(&1);
+        m.remove(&2);
+        m.shrink_to_fit();
+        assert_eq!(m.capacity(), 0);
 
-        // let mut m = HM::new();
-        // m.reserve(0);
-        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        let mut m = HM::new();
+        m.reserve(0);
+        assert_eq!(m.capacity(), 0);
     }
 
-    // #[test]
-    // fn test_create_capacity_zero() {
-    //     let mut m = HsHashMap::with_capacity(0);
+    #[test]
+    fn test_create_capacity_zero() {
+        let mut m = HsHashMap::with_capacity(0);
 
-    //     assert!(m.insert(1, 1).is_none());
+        assert!(m.insert(1, 1).is_none());
 
-    //     assert!(m.contains_key(&1));
-    //     assert!(!m.contains_key(&0));
-    // }
+        assert!(m.contains_key(&1));
+        assert!(!m.contains_key(&0));
+    }
 
     #[test]
     fn test_insert() {
@@ -1243,98 +1282,108 @@ mod tests {
         assert!(!m.is_empty());
     }
 
-    // #[test]
-    // fn test_behavior_resize_policy() {
-    //     let mut m = HsHashMap::new();
+    #[test]
+    fn test_behavior_resize_policy() {
+        let mut m = HsHashMap::new();
 
-    //     assert_eq!(m.len(), 0);
-    //     assert_eq!(m.raw_capacity(), 1);
-    //     assert!(m.is_empty());
+        assert_eq!(m.len(), 0);
+        assert_eq!(m.capacity(), 0);
+        assert!(m.is_empty());
 
-    //     m.insert(0, 0);
-    //     m.remove(&0);
-    //     assert!(m.is_empty());
-    //     let initial_raw_cap = m.raw_capacity();
-    //     m.reserve(initial_raw_cap);
-    //     let raw_cap = m.raw_capacity();
+        m.insert(0, 0);
+        m.remove(&0);
+        assert!(m.is_empty());
+        let initial_cap = m.capacity();
+        assert_eq!(initial_cap, DEFAULT_HOP_RANGE);
 
-    //     assert_eq!(raw_cap, initial_raw_cap * 2);
+        m.reserve(initial_cap);
+        assert_eq!(m.capacity(), initial_cap);
 
-    //     let mut i = 0;
-    //     for _ in 0..raw_cap * 3 / 4 {
-    //         m.insert(i, i);
-    //         i += 1;
-    //     }
-    //     // three quarters full
+        m.reserve(initial_cap + 1);
+        let cap = m.capacity();
+        assert_eq!(cap, initial_cap * 2);
 
-    //     assert_eq!(m.len(), i);
-    //     assert_eq!(m.raw_capacity(), raw_cap);
+        let mut i = 0;
+        for _ in 0..cap * 3 / 4 {
+            m.insert(i, i);
+            i += 1;
+        }
+        // three quarters full
 
-    //     for _ in 0..raw_cap / 4 {
-    //         m.insert(i, i);
-    //         i += 1;
-    //     }
-    //     // half full
+        assert_eq!(m.len(), i);
+        assert_eq!(m.capacity(), cap);
 
-    //     let new_raw_cap = m.raw_capacity();
-    //     assert_eq!(new_raw_cap, raw_cap * 2);
+        for _ in 0..cap / 4 {
+            m.insert(i, i);
+            i += 1;
+        }
+        // full
 
-    //     for _ in 0..raw_cap / 2 - 1 {
-    //         i -= 1;
-    //         m.remove(&i);
-    //         assert_eq!(m.raw_capacity(), new_raw_cap);
-    //     }
-    //     // A little more than one quarter full.
-    //     m.shrink_to_fit();
-    //     assert_eq!(m.raw_capacity(), raw_cap);
-    //     // again, a little more than half full
-    //     for _ in 0..raw_cap / 2 {
-    //         i -= 1;
-    //         m.remove(&i);
-    //     }
-    //     m.shrink_to_fit();
+        assert_eq!(m.capacity(), cap);
 
-    //     assert_eq!(m.len(), i);
-    //     assert!(!m.is_empty());
-    //     assert_eq!(m.raw_capacity(), initial_raw_cap);
-    // }
+        m.insert(i, i);
+        // a little more than half full
 
-    // #[test]
-    // fn test_reserve_shrink_to_fit() {
-    //     let mut m = HsHashMap::new();
-    //     m.insert(0, 0);
-    //     m.remove(&0);
-    //     assert!(m.capacity() >= m.len());
-    //     for i in 0..128 {
-    //         m.insert(i, i);
-    //     }
-    //     m.reserve(256);
+        let new_cap = m.capacity();
+        assert_eq!(m.capacity(), cap * 2);
 
-    //     let usable_cap = m.capacity();
-    //     for i in 128..(128 + 256) {
-    //         m.insert(i, i);
-    //         assert_eq!(m.capacity(), usable_cap);
-    //     }
+        for _ in 0..cap / 2 - 1 {
+            m.remove(&i);
+            i -= 1;
+            assert_eq!(m.capacity(), new_cap);
+        }
+        // A little more than one quarter full.
+        m.shrink_to_fit();
+        assert_eq!(m.capacity(), cap);
+        // again, a little more than half full
+        for _ in 0..cap / 2 {
+            m.remove(&i);
+            i -= 1;
+        }
+        m.remove(&i);
+        m.shrink_to_fit();
 
-    //     for i in 100..(128 + 256) {
-    //         assert_eq!(m.remove(&i), Some(i));
-    //     }
-    //     m.shrink_to_fit();
+        assert_eq!(m.len(), i);
+        assert!(!m.is_empty());
+        assert_eq!(m.capacity(), initial_cap);
+    }
 
-    //     assert_eq!(m.len(), 100);
-    //     assert!(!m.is_empty());
-    //     assert!(m.capacity() >= m.len());
+    #[test]
+    fn test_reserve_shrink_to_fit() {
+        let mut m = HsHashMap::new();
+        m.insert(0, 0);
+        m.remove(&0);
+        assert!(m.capacity() >= m.len());
+        for i in 0..128 {
+            m.insert(i, i);
+        }
+        m.reserve(256);
 
-    //     for i in 0..100 {
-    //         assert_eq!(m.remove(&i), Some(i));
-    //     }
-    //     m.shrink_to_fit();
-    //     m.insert(0, 0);
+        let usable_cap = m.capacity();
+        for i in 128..(128 + 256) {
+            m.insert(i, i);
+            assert_eq!(m.capacity(), usable_cap);
+        }
 
-    //     assert_eq!(m.len(), 1);
-    //     assert!(m.capacity() >= m.len());
-    //     assert_eq!(m.remove(&0), Some(0));
-    // }
+        for i in 100..(128 + 256) {
+            assert_eq!(m.remove(&i), Some(i));
+        }
+        m.shrink_to_fit();
+
+        assert_eq!(m.len(), 100);
+        assert!(!m.is_empty());
+        assert!(m.capacity() >= m.len());
+
+        for i in 0..100 {
+            assert_eq!(m.remove(&i), Some(i));
+        }
+        m.shrink_to_fit();
+        m.insert(0, 0);
+
+        assert_eq!(m.len(), 1);
+        assert!(m.capacity() >= m.len());
+        assert_eq!(m.remove(&0), Some(0));
+    }
 
     #[test]
     fn test_from_iter() {
