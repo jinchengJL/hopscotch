@@ -10,6 +10,12 @@ use std::iter::FusedIterator;
 use std::mem;
 use std::ops::Index;
 
+// Missing features compared to stable hash_map::HashMap:
+// - Custom hasher.
+// - Drain iterator.
+// - retain()
+// - entry()
+
 const DEFAULT_HOP_RANGE: usize = 32;
 
 #[derive(Clone, Debug)]
@@ -32,7 +38,6 @@ where
 }
 
 // A logical hash bucket storing up to DEFAULT_HOP_RANGE entries.
-// TODO: Add an iterator over occupied hops.
 trait Bucket {
     fn has_hop(&self, hop: usize) -> bool;
 
@@ -257,7 +262,6 @@ impl<K: Hash + Eq, V> Extend<(K, V)> for HsHashMap<K, V> {
     where
         T: IntoIterator<Item = (K, V)>,
     {
-        // TODO: Call reserve() first.
         for (k, v) in iter.into_iter() {
             self.insert(k, v);
         }
@@ -406,10 +410,6 @@ impl<K: Hash + Eq, V> Default for HsHashMap<K, V> {
     }
 }
 
-// TODO: Missing features compared to hash_map::HashMap:
-// - Custom hash function.
-// - Drain iterator.
-// - Manipulating the raw entry.
 impl<K, V> HsHashMap<K, V>
 where
     K: Hash + Eq,
@@ -487,7 +487,7 @@ where
         }
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
-        for hop in (0..self.hop_range).filter(|hop| hop_info.get(*hop)) {
+        for hop in hop_info.into_iter() {
             let entry_idx = self.get_idx(bucket_idx, hop);
             match &self.slots[entry_idx].entry {
                 None => {
@@ -525,7 +525,7 @@ where
         }
         let bucket_idx = self.get_bucket(&k);
         let hop_info = &self.slots[bucket_idx].hop_info;
-        for hop in (0..self.hop_range).filter(|hop| hop_info.get(*hop)) {
+        for hop in hop_info.into_iter() {
             let entry_idx = self.get_idx(bucket_idx, hop);
             match &self.slots[entry_idx].entry {
                 None => {
@@ -598,8 +598,8 @@ where
         if additional == 0 {
             return;
         }
-        // TODO: There's probably a better way to do this.
         let mut new_capacity = self.hop_range;
+        // No overflows! There's probably a better way to do this.
         while (new_capacity < self.len())
             || ((new_capacity <= usize::MAX / 2) && (new_capacity - self.len()) < additional)
         {
@@ -678,7 +678,7 @@ where
     #[cfg(test)]
     fn check_consistency(&self) -> bool {
         for (bucket_idx, bucket) in self.slots.iter().enumerate() {
-            for hop in (0..self.hop_range).filter(|hop| bucket.hop_info.get(*hop)) {
+            for hop in bucket.hop_info.into_iter() {
                 let entry_idx = self.get_idx(bucket_idx, hop);
                 if self.slots[entry_idx].is_vacant() {
                     println!(
@@ -1474,92 +1474,6 @@ mod tests {
         map[&4];
     }
 
-    // #[test]
-    // fn test_entry() {
-    //     let xs = [(1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60)];
-
-    //     let mut map: HsHashMap<_, _> = xs.iter().copied().collect();
-
-    //     // Existing key (insert)
-    //     match map.entry(1) {
-    //         Vacant(_) => unreachable!(),
-    //         Occupied(mut view) => {
-    //             assert_eq!(view.get(), &10);
-    //             assert_eq!(view.insert(100), 10);
-    //         }
-    //     }
-    //     assert_eq!(map.get(&1).unwrap(), &100);
-    //     assert_eq!(map.len(), 6);
-
-    //     // Existing key (update)
-    //     match map.entry(2) {
-    //         Vacant(_) => unreachable!(),
-    //         Occupied(mut view) => {
-    //             let v = view.get_mut();
-    //             let new_v = (*v) * 10;
-    //             *v = new_v;
-    //         }
-    //     }
-    //     assert_eq!(map.get(&2).unwrap(), &200);
-    //     assert_eq!(map.len(), 6);
-
-    //     // Existing key (take)
-    //     match map.entry(3) {
-    //         Vacant(_) => unreachable!(),
-    //         Occupied(view) => {
-    //             assert_eq!(view.remove(), 30);
-    //         }
-    //     }
-    //     assert_eq!(map.get(&3), None);
-    //     assert_eq!(map.len(), 5);
-
-    //     // Inexistent key (insert)
-    //     match map.entry(10) {
-    //         Occupied(_) => unreachable!(),
-    //         Vacant(view) => {
-    //             assert_eq!(*view.insert(1000), 1000);
-    //         }
-    //     }
-    //     assert_eq!(map.get(&10).unwrap(), &1000);
-    //     assert_eq!(map.len(), 6);
-    // }
-
-    // #[test]
-    // fn test_entry_take_doesnt_corrupt() {
-    //     #![allow(deprecated)] //rand
-    //                           // Test for #19292
-    //     fn check(m: &HsHashMap<i32, ()>) {
-    //         for k in m.keys() {
-    //             assert!(m.contains_key(k), "{} is in keys() but not in the map?", k);
-    //         }
-    //     }
-
-    //     let mut m = HsHashMap::new();
-
-    //     let mut rng = {
-    //         let seed = u64::from_le_bytes(*b"testseed");
-    //         SmallRng::seed_from_u64(seed)
-    //     };
-
-    //     // Populate the map with some items.
-    //     for _ in 0..50 {
-    //         let x = rng.gen_range(-10..10);
-    //         m.insert(x, ());
-    //     }
-
-    //     for _ in 0..1000 {
-    //         let x = rng.gen_range(-10..10);
-    //         match m.entry(x) {
-    //             Vacant(_) => {}
-    //             Occupied(e) => {
-    //                 e.remove();
-    //             }
-    //         }
-
-    //         check(&m);
-    //     }
-    // }
-
     #[test]
     fn test_extend_ref() {
         let mut a = HsHashMap::new();
@@ -1600,164 +1514,6 @@ mod tests {
         a.insert(item, 0);
         assert!(a.capacity() > a.len());
     }
-
-    // #[test]
-    // fn test_occupied_entry_key() {
-    //     let mut a = HsHashMap::new();
-    //     let key = "hello there";
-    //     let value = "value goes here";
-    //     assert!(a.is_empty());
-    //     a.insert(key, value);
-    //     assert_eq!(a.len(), 1);
-    //     assert_eq!(a[key], value);
-
-    //     match a.entry(key) {
-    //         Vacant(_) => panic!(),
-    //         Occupied(e) => assert_eq!(key, *e.key()),
-    //     }
-    //     assert_eq!(a.len(), 1);
-    //     assert_eq!(a[key], value);
-    // }
-
-    // #[test]
-    // fn test_vacant_entry_key() {
-    //     let mut a = HsHashMap::new();
-    //     let key = "hello there";
-    //     let value = "value goes here";
-
-    //     assert!(a.is_empty());
-    //     match a.entry(key) {
-    //         Occupied(_) => panic!(),
-    //         Vacant(e) => {
-    //             assert_eq!(key, *e.key());
-    //             e.insert(value);
-    //         }
-    //     }
-    //     assert_eq!(a.len(), 1);
-    //     assert_eq!(a[key], value);
-    // }
-
-    // #[test]
-    // fn test_occupied_entry_replace_entry_with() {
-    //     let mut a = HsHashMap::new();
-
-    //     let key = "a key";
-    //     let value = "an initial value";
-    //     let new_value = "a new value";
-
-    //     let entry = a.entry(key).insert(value).replace_entry_with(|k, v| {
-    //         assert_eq!(k, &key);
-    //         assert_eq!(v, value);
-    //         Some(new_value)
-    //     });
-
-    //     match entry {
-    //         Occupied(e) => {
-    //             assert_eq!(e.key(), &key);
-    //             assert_eq!(e.get(), &new_value);
-    //         }
-    //         Vacant(_) => panic!(),
-    //     }
-
-    //     assert_eq!(a[key], new_value);
-    //     assert_eq!(a.len(), 1);
-
-    //     let entry = match a.entry(key) {
-    //         Occupied(e) => e.replace_entry_with(|k, v| {
-    //             assert_eq!(k, &key);
-    //             assert_eq!(v, new_value);
-    //             None
-    //         }),
-    //         Vacant(_) => panic!(),
-    //     };
-
-    //     match entry {
-    //         Vacant(e) => assert_eq!(e.key(), &key),
-    //         Occupied(_) => panic!(),
-    //     }
-
-    //     assert!(!a.contains_key(key));
-    //     assert_eq!(a.len(), 0);
-    // }
-
-    // #[test]
-    // fn test_entry_and_replace_entry_with() {
-    //     let mut a = HsHashMap::new();
-
-    //     let key = "a key";
-    //     let value = "an initial value";
-    //     let new_value = "a new value";
-
-    //     let entry = a.entry(key).and_replace_entry_with(|_, _| panic!());
-
-    //     match entry {
-    //         Vacant(e) => assert_eq!(e.key(), &key),
-    //         Occupied(_) => panic!(),
-    //     }
-
-    //     a.insert(key, value);
-
-    //     let entry = a.entry(key).and_replace_entry_with(|k, v| {
-    //         assert_eq!(k, &key);
-    //         assert_eq!(v, value);
-    //         Some(new_value)
-    //     });
-
-    //     match entry {
-    //         Occupied(e) => {
-    //             assert_eq!(e.key(), &key);
-    //             assert_eq!(e.get(), &new_value);
-    //         }
-    //         Vacant(_) => panic!(),
-    //     }
-
-    //     assert_eq!(a[key], new_value);
-    //     assert_eq!(a.len(), 1);
-
-    //     let entry = a.entry(key).and_replace_entry_with(|k, v| {
-    //         assert_eq!(k, &key);
-    //         assert_eq!(v, new_value);
-    //         None
-    //     });
-
-    //     match entry {
-    //         Vacant(e) => assert_eq!(e.key(), &key),
-    //         Occupied(_) => panic!(),
-    //     }
-
-    //     assert!(!a.contains_key(key));
-    //     assert_eq!(a.len(), 0);
-    // }
-
-    // #[test]
-    // fn test_replace_entry_with_doesnt_corrupt() {
-    //     #![allow(deprecated)] //rand
-    //                           // Test for #19292
-    //     fn check(m: &HsHashMap<i32, ()>) {
-    //         for k in m.keys() {
-    //             assert!(m.contains_key(k), "{} is in keys() but not in the map?", k);
-    //         }
-    //     }
-
-    //     let mut m = HsHashMap::new();
-
-    //     let mut rng = {
-    //         let seed = u64::from_le_bytes(*b"testseed");
-    //         SmallRng::seed_from_u64(seed)
-    //     };
-
-    //     // Populate the map with some items.
-    //     for _ in 0..50 {
-    //         let x = rng.gen_range(-10..10);
-    //         m.insert(x, ());
-    //     }
-
-    //     for _ in 0..1000 {
-    //         let x = rng.gen_range(-10..10);
-    //         m.entry(x).and_replace_entry_with(|_, _| None);
-    //         check(&m);
-    //     }
-    // }
 
     // #[test]
     // fn test_retain() {
