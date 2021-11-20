@@ -13,7 +13,6 @@ use std::ops::Index;
 // Missing features compared to stable hash_map::HashMap:
 // - Custom hasher.
 // - Drain iterator.
-// - retain()
 // - entry()
 
 const DEFAULT_HOP_RANGE: usize = 32;
@@ -591,6 +590,30 @@ where
     pub fn into_values(self) -> IntoValues<K, V> {
         IntoValues {
             inner: self.into_iter(),
+        }
+    }
+
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        for bucket_idx in 0..self.capacity() {
+            let hop_info = self.slots[bucket_idx].hop_info.clone();
+            for hop in &hop_info {
+                let entry_idx = self.get_idx(bucket_idx, hop);
+                debug_assert!(self.slots[entry_idx].entry.is_some());
+                // Is the following clause idiomatic Rust?
+                if {
+                    let Entry { ref key, ref mut value } = &mut self.slots[entry_idx].entry.as_mut().unwrap();
+                    f(key, value)
+                } {
+                    continue;
+                }
+                // Erase the entry.
+                self.slots[bucket_idx].set_hop(hop, false);
+                self.slots[entry_idx].entry = None;
+                self.length -= 1;
+            }
         }
     }
 
@@ -1515,16 +1538,16 @@ mod tests {
         assert!(a.capacity() > a.len());
     }
 
-    // #[test]
-    // fn test_retain() {
-    //     let mut map: HsHashMap<i32, i32> = (0..100).map(|x| (x, x * 10)).collect();
+    #[test]
+    fn test_retain() {
+        let mut map: HsHashMap<i32, i32> = (0..100).map(|x| (x, x * 10)).collect();
 
-    //     map.retain(|&k, _| k % 2 == 0);
-    //     assert_eq!(map.len(), 50);
-    //     assert_eq!(map[&2], 20);
-    //     assert_eq!(map[&4], 40);
-    //     assert_eq!(map[&6], 60);
-    // }
+        map.retain(|&k, _| k % 2 == 0);
+        assert_eq!(map.len(), 50);
+        assert_eq!(map[&2], 20);
+        assert_eq!(map[&4], 40);
+        assert_eq!(map[&6], 60);
+    }
 
     // #[test]
     // fn test_const_with_hasher() {
