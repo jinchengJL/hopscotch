@@ -1,7 +1,9 @@
 use bitmaps::Bitmap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::hash_map::RandomState;
 use std::fmt;
 use std::fmt::Debug;
+use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::iter::Extend;
@@ -11,7 +13,6 @@ use std::mem;
 use std::ops::Index;
 
 // Missing features compared to stable hash_map::HashMap:
-// - Custom hasher.
 // - Drain iterator.
 // - entry()
 
@@ -46,10 +47,12 @@ trait Bucket {
 }
 
 #[derive(Clone)]
-pub struct HsHashMap<K, V>
+pub struct HsHashMap<K, V, S = RandomState>
 where
     K: Hash + Eq,
+    S: BuildHasher,
 {
+    hash_builder: S,
     slots: Vec<Slot<K, V>>,
     length: usize,
     hop_range: usize,
@@ -88,17 +91,15 @@ where
     }
 }
 
-pub struct Iter<'a, K, V>
-where
-    K: Hash + Eq,
+pub struct Iter<'a, K: Hash + Eq, V, S: BuildHasher>
 {
-    map: &'a HsHashMap<K, V>,
+    map: &'a HsHashMap<K, V, S>,
     index: usize,
     remaining_items: usize,
 }
 
-impl<'a, K: Hash + Eq, V> Iter<'a, K, V> {
-    fn new(map: &'a HsHashMap<K, V>) -> Self {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iter<'a, K, V, S> {
+    fn new(map: &'a HsHashMap<K, V, S>) -> Self {
         Self {
             map: map,
             index: 0,
@@ -107,7 +108,7 @@ impl<'a, K: Hash + Eq, V> Iter<'a, K, V> {
     }
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for Iter<'a, K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for Iter<'a, K, V, S> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -128,20 +129,18 @@ impl<'a, K: Hash + Eq, V> Iterator for Iter<'a, K, V> {
     }
 }
 
-impl<'a, K: Hash + Eq, V> ExactSizeIterator for Iter<'a, K, V> {}
-impl<'a, K: Hash + Eq, V> FusedIterator for Iter<'a, K, V> {}
+impl<'a, K: Hash + Eq, V, S: BuildHasher> ExactSizeIterator for Iter<'a, K, V, S> {}
+impl<'a, K: Hash + Eq, V, S: BuildHasher> FusedIterator for Iter<'a, K, V, S> {}
 
-pub struct IterMut<'a, K, V>
-where
-    K: Hash + Eq,
+pub struct IterMut<'a, K: Hash + Eq, V, S: BuildHasher>
 {
-    map: &'a mut HsHashMap<K, V>,
+    map: &'a mut HsHashMap<K, V, S>,
     index: usize,
     remaining_items: usize,
 }
 
-impl<'a, K: Hash + Eq, V> IterMut<'a, K, V> {
-    fn new(map: &'a mut HsHashMap<K, V>) -> Self {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> IterMut<'a, K, V, S> {
+    fn new(map: &'a mut HsHashMap<K, V, S>) -> Self {
         let len = map.len();
         Self {
             map: map,
@@ -151,9 +150,7 @@ impl<'a, K: Hash + Eq, V> IterMut<'a, K, V> {
     }
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for IterMut<'a, K, V>
-where
-    K: Hash + Eq,
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for IterMut<'a, K, V, S>
 {
     type Item = (&'a mut K, &'a mut V);
 
@@ -182,20 +179,18 @@ where
     }
 }
 
-impl<'a, K: Hash + Eq, V> ExactSizeIterator for IterMut<'a, K, V> {}
-impl<'a, K: Hash + Eq, V> FusedIterator for IterMut<'a, K, V> {}
+impl<'a, K: Hash + Eq, V, S: BuildHasher> ExactSizeIterator for IterMut<'a, K, V, S> {}
+impl<'a, K: Hash + Eq, V, S: BuildHasher> FusedIterator for IterMut<'a, K, V, S> {}
 
-pub struct IntoIter<K, V>
-where
-    K: Hash + Eq,
+pub struct IntoIter<K: Hash + Eq, V, S: BuildHasher>
 {
-    map: HsHashMap<K, V>,
+    map: HsHashMap<K, V, S>,
     index: usize,
     remaining_items: usize,
 }
 
-impl<K: Hash + Eq, V> IntoIter<K, V> {
-    fn new(map: HsHashMap<K, V>) -> Self {
+impl<K: Hash + Eq, V, S: BuildHasher> IntoIter<K, V, S> {
+    fn new(map: HsHashMap<K, V, S>) -> Self {
         let len = map.len();
         Self {
             map: map,
@@ -205,9 +200,7 @@ impl<K: Hash + Eq, V> IntoIter<K, V> {
     }
 }
 
-impl<K, V> Iterator for IntoIter<K, V>
-where
-    K: Hash + Eq,
+impl<K: Hash + Eq, V, S: BuildHasher> Iterator for IntoIter<K, V, S>
 {
     type Item = (K, V);
 
@@ -229,34 +222,34 @@ where
     }
 }
 
-impl<K: Hash + Eq, V> ExactSizeIterator for IntoIter<K, V> {}
-impl<K: Hash + Eq, V> FusedIterator for IntoIter<K, V> {}
+impl<K: Hash + Eq, V, S: BuildHasher> ExactSizeIterator for IntoIter<K, V, S> {}
+impl<K: Hash + Eq, V, S: BuildHasher> FusedIterator for IntoIter<K, V, S> {}
 
-impl<'a, K: Hash + Eq, V> IntoIterator for &'a HsHashMap<K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a HsHashMap<K, V, S> {
     type Item = (&'a K, &'a V);
-    type IntoIter = Iter<'a, K, V>;
+    type IntoIter = Iter<'a, K, V, S>;
     fn into_iter(self) -> Self::IntoIter {
         Iter::new(self)
     }
 }
 
-impl<'a, K: Hash + Eq, V> IntoIterator for &'a mut HsHashMap<K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a mut HsHashMap<K, V, S> {
     type Item = (&'a mut K, &'a mut V);
-    type IntoIter = IterMut<'a, K, V>;
+    type IntoIter = IterMut<'a, K, V, S>;
     fn into_iter(self) -> Self::IntoIter {
         IterMut::new(self)
     }
 }
 
-impl<K: Hash + Eq, V> IntoIterator for HsHashMap<K, V> {
+impl<K: Hash + Eq, V, S: BuildHasher> IntoIterator for HsHashMap<K, V, S> {
     type Item = (K, V);
-    type IntoIter = IntoIter<K, V>;
+    type IntoIter = IntoIter<K, V, S>;
     fn into_iter(self) -> Self::IntoIter {
         IntoIter::new(self)
     }
 }
 
-impl<K: Hash + Eq, V> Extend<(K, V)> for HsHashMap<K, V> {
+impl<K: Hash + Eq, V, S: BuildHasher> Extend<(K, V)> for HsHashMap<K, V, S> {
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = (K, V)>,
@@ -267,10 +260,11 @@ impl<K: Hash + Eq, V> Extend<(K, V)> for HsHashMap<K, V> {
     }
 }
 
-impl<'a, K, V> Extend<(&'a K, &'a V)> for HsHashMap<K, V>
+impl<'a, K, V, S> Extend<(&'a K, &'a V)> for HsHashMap<K, V, S>
 where
     K: Eq + Hash + Copy,
     V: Copy,
+    S: BuildHasher,
 {
     fn extend<T>(&mut self, iter: T)
     where
@@ -280,22 +274,22 @@ where
     }
 }
 
-impl<K: Hash + Eq, V> FromIterator<(K, V)> for HsHashMap<K, V> {
+impl<K: Hash + Eq, V, S: BuildHasher + Default> FromIterator<(K, V)> for HsHashMap<K, V, S> {
     fn from_iter<T>(iter: T) -> Self
     where
         T: IntoIterator<Item = (K, V)>,
     {
-        let mut map = HsHashMap::new();
+        let mut map = HsHashMap::with_hasher(S::default());
         map.extend(iter);
         map
     }
 }
 
-pub struct Keys<'a, K: Hash + Eq, V> {
-    inner: Iter<'a, K, V>,
+pub struct Keys<'a, K: Hash + Eq, V, S: BuildHasher> {
+    inner: Iter<'a, K, V, S>,
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for Keys<'a, K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for Keys<'a, K, V, S> {
     type Item = &'a K;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -307,11 +301,11 @@ impl<'a, K: Hash + Eq, V> Iterator for Keys<'a, K, V> {
     }
 }
 
-pub struct IntoKeys<K: Hash + Eq, V> {
-    inner: IntoIter<K, V>,
+pub struct IntoKeys<K: Hash + Eq, V, S: BuildHasher> {
+    inner: IntoIter<K, V, S>,
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for IntoKeys<K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for IntoKeys<K, V, S> {
     type Item = K;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -323,11 +317,11 @@ impl<'a, K: Hash + Eq, V> Iterator for IntoKeys<K, V> {
     }
 }
 
-pub struct Values<'a, K: Hash + Eq, V> {
-    inner: Iter<'a, K, V>,
+pub struct Values<'a, K: Hash + Eq, V, S: BuildHasher> {
+    inner: Iter<'a, K, V, S>,
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for Values<'a, K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for Values<'a, K, V, S> {
     type Item = &'a V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -339,11 +333,11 @@ impl<'a, K: Hash + Eq, V> Iterator for Values<'a, K, V> {
     }
 }
 
-pub struct ValuesMut<'a, K: Hash + Eq, V> {
-    inner: IterMut<'a, K, V>,
+pub struct ValuesMut<'a, K: Hash + Eq, V, S: BuildHasher> {
+    inner: IterMut<'a, K, V, S>,
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for ValuesMut<'a, K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for ValuesMut<'a, K, V, S> {
     type Item = &'a mut V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -355,11 +349,11 @@ impl<'a, K: Hash + Eq, V> Iterator for ValuesMut<'a, K, V> {
     }
 }
 
-pub struct IntoValues<K: Hash + Eq, V> {
-    inner: IntoIter<K, V>,
+pub struct IntoValues<K: Hash + Eq, V, S: BuildHasher> {
+    inner: IntoIter<K, V, S>,
 }
 
-impl<'a, K: Hash + Eq, V> Iterator for IntoValues<K, V> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher> Iterator for IntoValues<K, V, S> {
     type Item = V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -383,9 +377,10 @@ impl<K: Hash + Eq, V: PartialEq> PartialEq for HsHashMap<K, V> {
 
 impl<K: Hash + Eq, V: Eq> Eq for HsHashMap<K, V> {}
 
-impl<K, V> Index<&K> for HsHashMap<K, V>
+impl<K, V, S> Index<&K> for HsHashMap<K, V, S>
 where
     K: Hash + Eq,
+    S: BuildHasher,
 {
     type Output = V;
     fn index(&self, key: &K) -> &V {
@@ -409,25 +404,36 @@ impl<K: Hash + Eq, V> Default for HsHashMap<K, V> {
     }
 }
 
-impl<K, V> HsHashMap<K, V>
-where
-    K: Hash + Eq,
-{
-    // Public functions.
-    pub fn new() -> HsHashMap<K, V> {
+impl<K: Hash + Eq, V> HsHashMap<K, V, RandomState> {
+    pub fn new() -> HsHashMap<K, V, RandomState> {
         Self::with_hop_range(DEFAULT_HOP_RANGE)
     }
 
-    pub fn with_capacity(capacity: usize) -> HsHashMap<K, V> {
-        HsHashMap::with_capacity_and_hop_range(capacity, DEFAULT_HOP_RANGE)
+    pub fn with_capacity(capacity: usize) -> HsHashMap<K, V, RandomState> {
+        HsHashMap::with_capacity_and_hasher_and_hop_range(capacity, RandomState::new(), DEFAULT_HOP_RANGE)
     }
 
-    pub fn with_hop_range(hop_range: usize) -> HsHashMap<K, V> {
-        HsHashMap::with_capacity_and_hop_range(0, hop_range)
+    pub fn with_hop_range(hop_range: usize) -> HsHashMap<K, V, RandomState> {
+        HsHashMap::with_capacity_and_hasher_and_hop_range(0, RandomState::new(), hop_range)
+    }
+}
+
+impl<K, V, S> HsHashMap<K, V, S>
+where
+    K: Hash + Eq,
+    S: BuildHasher,
+{
+    pub fn with_hasher(hash_builder: S) -> HsHashMap<K, V, S> {
+        HsHashMap::with_capacity_and_hasher_and_hop_range(0, hash_builder, DEFAULT_HOP_RANGE)
     }
 
-    pub fn with_capacity_and_hop_range(capacity: usize, hop_range: usize) -> HsHashMap<K, V> {
+    pub fn with_capacity_and_hasher_and_hop_range(
+        capacity: usize,
+        hash_builder: S,
+        hop_range: usize,
+    ) -> HsHashMap<K, V, S> {
         let mut map = HsHashMap {
+            hash_builder: hash_builder,
             slots: vec![],
             length: 0,
             hop_range: hop_range,
@@ -556,38 +562,39 @@ where
     }
 
     pub fn clear(&mut self) {
-        *self = HsHashMap::new();
+        self.slots.clear();
+        self.length = 0;
     }
 
-    pub fn iter(&self) -> Iter<'_, K, V> {
+    pub fn iter(&self) -> Iter<'_, K, V, S> {
         Iter::new(&self)
     }
 
-    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V, S> {
         IterMut::new(self)
     }
 
-    pub fn keys(&self) -> Keys<'_, K, V> {
+    pub fn keys(&self) -> Keys<'_, K, V, S> {
         Keys { inner: self.iter() }
     }
 
-    pub fn into_keys(self) -> IntoKeys<K, V> {
+    pub fn into_keys(self) -> IntoKeys<K, V, S> {
         IntoKeys {
             inner: self.into_iter(),
         }
     }
 
-    pub fn values(&self) -> Values<'_, K, V> {
+    pub fn values(&self) -> Values<'_, K, V, S> {
         Values { inner: self.iter() }
     }
 
-    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V, S> {
         ValuesMut {
             inner: self.iter_mut(),
         }
     }
 
-    pub fn into_values(self) -> IntoValues<K, V> {
+    pub fn into_values(self) -> IntoValues<K, V, S> {
         IntoValues {
             inner: self.into_iter(),
         }
@@ -604,7 +611,10 @@ where
                 debug_assert!(self.slots[entry_idx].entry.is_some());
                 // Is the following clause idiomatic Rust?
                 if {
-                    let Entry { ref key, ref mut value } = &mut self.slots[entry_idx].entry.as_mut().unwrap();
+                    let Entry {
+                        ref key,
+                        ref mut value,
+                    } = &mut self.slots[entry_idx].entry.as_mut().unwrap();
                     f(key, value)
                 } {
                     continue;
@@ -765,14 +775,14 @@ mod tests {
         let m = HM::default();
         assert_eq!(m.capacity(), 0);
 
-        // let m = HM::with_hasher(DefaultHashBuilder::default());
-        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        let m = HM::with_hasher(RandomState::default());
+        assert_eq!(m.capacity(), 0);
 
         let m = HM::with_capacity(0);
         assert_eq!(m.capacity(), 0);
 
-        // let m = HM::with_capacity_and_hasher(0, DefaultHashBuilder::default());
-        // assert_eq!(m.capacity(), DEFAULT_HOP_RANGE);
+        let m = HM::with_capacity_and_hasher_and_hop_range(0, RandomState::default(), DEFAULT_HOP_RANGE);
+        assert_eq!(m.capacity(), 0);
 
         let mut m = HM::new();
         m.insert(1, 1);
@@ -1551,9 +1561,6 @@ mod tests {
 
     // #[test]
     // fn test_const_with_hasher() {
-    //     use core::hash::BuildHasher;
-    //     use std::collections::hash_map::DefaultHasher;
-
     //     #[derive(Clone)]
     //     struct MyHasher;
     //     impl BuildHasher for MyHasher {
@@ -1564,8 +1571,9 @@ mod tests {
     //         }
     //     }
 
+    //     // NOTE: This requires with_hasher to be a "const" function.
     //     const EMPTY_MAP: HsHashMap<u32, std::string::String, MyHasher> =
-    //         HsHashMap::with_hasher(MyHasher);
+    //         HsHashMap::with_hasher(MyHasher());
 
     //     let mut map = EMPTY_MAP;
     //     map.insert(17, "seventeen".to_owned());
