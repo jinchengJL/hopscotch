@@ -16,7 +16,7 @@ use std::ops::Index;
 // - Drain iterator.
 // - entry()
 
-const DEFAULT_HOP_RANGE: usize = 32;
+const HOP_RANGE: usize = 32;
 
 #[derive(Clone, Debug)]
 struct Entry<K, V>
@@ -33,11 +33,11 @@ struct Slot<K, V>
 where
     K: Hash + Eq,
 {
-    hop_info: Bitmap<DEFAULT_HOP_RANGE>,
+    hop_info: Bitmap<HOP_RANGE>,
     entry: Option<Entry<K, V>>,
 }
 
-// A logical hash bucket storing up to DEFAULT_HOP_RANGE entries.
+// A logical hash bucket storing up to HOP_RANGE entries.
 trait Bucket {
     fn has_hop(&self, hop: usize) -> bool;
 
@@ -55,7 +55,6 @@ where
     hash_builder: S,
     slots: Vec<Slot<K, V>>,
     length: usize,
-    hop_range: usize,
 }
 
 impl<K, V> Slot<K, V>
@@ -406,15 +405,11 @@ impl<K: Hash + Eq, V> Default for HsHashMap<K, V> {
 
 impl<K: Hash + Eq, V> HsHashMap<K, V, RandomState> {
     pub fn new() -> HsHashMap<K, V, RandomState> {
-        Self::with_hop_range(DEFAULT_HOP_RANGE)
+        Self::with_capacity(0)
     }
 
     pub fn with_capacity(capacity: usize) -> HsHashMap<K, V, RandomState> {
-        HsHashMap::with_capacity_and_hasher_and_hop_range(capacity, RandomState::new(), DEFAULT_HOP_RANGE)
-    }
-
-    pub fn with_hop_range(hop_range: usize) -> HsHashMap<K, V, RandomState> {
-        HsHashMap::with_capacity_and_hasher_and_hop_range(0, RandomState::new(), hop_range)
+        HsHashMap::with_capacity_and_hasher(capacity, RandomState::new())
     }
 }
 
@@ -424,19 +419,17 @@ where
     S: BuildHasher,
 {
     pub fn with_hasher(hash_builder: S) -> HsHashMap<K, V, S> {
-        HsHashMap::with_capacity_and_hasher_and_hop_range(0, hash_builder, DEFAULT_HOP_RANGE)
+        HsHashMap::with_capacity_and_hasher(0, hash_builder)
     }
 
-    pub fn with_capacity_and_hasher_and_hop_range(
+    pub fn with_capacity_and_hasher(
         capacity: usize,
         hash_builder: S,
-        hop_range: usize,
     ) -> HsHashMap<K, V, S> {
         let mut map = HsHashMap {
             hash_builder: hash_builder,
             slots: vec![],
             length: 0,
-            hop_range: hop_range,
         };
         map.reserve(capacity);
         map
@@ -445,7 +438,7 @@ where
     // This is actually insert_or_assign() in C++.
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         if self.capacity() == 0 {
-            self.rehash(self.hop_range);
+            self.rehash(HOP_RANGE);
         } else if let Some(val) = self.get_mut(&k) {
             // Found `k`.
             return Some(mem::replace(val, v)); // std::exchange
@@ -467,7 +460,7 @@ where
         }
         // Keep moving the empty slot closer to bucket_idx.
         let mut hop = vacant_hop.unwrap();
-        while hop >= self.hop_range {
+        while hop >= HOP_RANGE {
             hop = match self.move_closer(bucket_idx, hop) {
                 None => {
                     self.rehash(self.capacity() * 2);
@@ -631,7 +624,7 @@ where
         if additional == 0 {
             return;
         }
-        let mut new_capacity = self.hop_range;
+        let mut new_capacity = HOP_RANGE;
         // No overflows! There's probably a better way to do this.
         while (new_capacity < self.len())
             || ((new_capacity <= usize::MAX / 2) && (new_capacity - self.len()) < additional)
@@ -646,7 +639,7 @@ where
             self.clear();
             return;
         }
-        let mut new_capacity = self.hop_range;
+        let mut new_capacity = HOP_RANGE;
         while (new_capacity <= usize::MAX / 2) && (new_capacity < self.len()) {
             new_capacity *= 2;
         }
@@ -681,14 +674,14 @@ where
 
     // Moves the vacant slot at `origin_idx + vacant_hop` closer to `origin_idx`.
     fn move_closer(&mut self, origin_idx: usize, vacant_hop: usize) -> Option<usize> {
-        debug_assert!(vacant_hop >= self.hop_range);
+        debug_assert!(vacant_hop >= HOP_RANGE);
         let vacant_idx = self.get_idx(origin_idx, vacant_hop);
         debug_assert!(self.slots[vacant_idx].is_vacant());
-        for candidate_hop in (vacant_hop - self.hop_range + 1)..vacant_hop {
+        for candidate_hop in (vacant_hop - HOP_RANGE + 1)..vacant_hop {
             let candidate_idx = self.get_idx(origin_idx, candidate_hop);
             let candidate_to_vacant = vacant_hop - candidate_hop;
             // Hop info for vacant_hop must be empty.
-            debug_assert!(candidate_to_vacant < self.hop_range);
+            debug_assert!(candidate_to_vacant < HOP_RANGE);
             debug_assert!(!self.slots[candidate_idx].has_hop(candidate_to_vacant));
             // Find the earliest slot for `candidate_idx` that isn't empty.
             let victim_hop = match self.slots[candidate_idx].hop_info.first_index() {
@@ -736,7 +729,7 @@ mod tests {
         let mut map: HsHashMap<i32, i32> = HsHashMap::new();
         assert_eq!(map.is_empty(), true);
         assert_eq!(map.len(), 0);
-        for key in 0..(DEFAULT_HOP_RANGE * 16) as i32 {
+        for key in 0..(HOP_RANGE * 16) as i32 {
             assert_eq!(map.get(&key), None);
             assert_eq!(map.insert(key, key), None);
             assert_eq!(map.is_empty(), false);
@@ -755,13 +748,13 @@ mod tests {
             assert_eq!(*map.get(&1).unwrap(), val);
         }
         assert!(map.check_consistency());
-        assert_eq!(map.len(), DEFAULT_HOP_RANGE * 16);
-        for key in 2..(DEFAULT_HOP_RANGE * 8) as i32 {
+        assert_eq!(map.len(), HOP_RANGE * 16);
+        for key in 2..(HOP_RANGE * 8) as i32 {
             assert_eq!(*map.get(&key).unwrap(), key);
             assert_eq!(map.remove(&key), Some(key), "{:?}", key);
         }
         assert!(map.check_consistency());
-        assert_eq!(map.len(), DEFAULT_HOP_RANGE * 8 + 2);
+        assert_eq!(map.len(), HOP_RANGE * 8 + 2);
         assert_eq!(map.is_empty(), false);
     }
 
@@ -781,7 +774,7 @@ mod tests {
         let m = HM::with_capacity(0);
         assert_eq!(m.capacity(), 0);
 
-        let m = HM::with_capacity_and_hasher_and_hop_range(0, RandomState::default(), DEFAULT_HOP_RANGE);
+        let m = HM::with_capacity_and_hasher(0, RandomState::default());
         assert_eq!(m.capacity(), 0);
 
         let mut m = HM::new();
@@ -1327,7 +1320,7 @@ mod tests {
         m.remove(&0);
         assert!(m.is_empty());
         let initial_cap = m.capacity();
-        assert_eq!(initial_cap, DEFAULT_HOP_RANGE);
+        assert_eq!(initial_cap, HOP_RANGE);
 
         m.reserve(initial_cap);
         assert_eq!(m.capacity(), initial_cap);
